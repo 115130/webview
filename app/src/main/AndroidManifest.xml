@@ -37,6 +37,12 @@
             android:exported="false"
             android:label="@string/settings"
             android:parentActivityName=".MainActivity" />
+            
+        <activity
+            android:name=".BlockedDomainsActivity"
+            android:exported="false"
+            android:label="@string/pref_blocked_domains"
+            android:parentActivityName=".SettingsActivity" />
 
         <activity
             android:name=".CameraActivity"

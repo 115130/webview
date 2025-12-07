@@ -26,6 +26,7 @@ import android.view.inputmethod.EditorInfo
 import android.webkit.*
 import android.widget.PopupWindow
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.coordinatorlayout.widget.CoordinatorLayout
@@ -50,6 +51,15 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
     private lateinit var binding: ActivityMainBinding
     private var isAddressBarVisible = true
     private lateinit var sharedPreferences: SharedPreferences
+    
+    // FAB 自动隐藏相关
+    private val fabHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val fabAutoHideRunnable = Runnable { partiallyHideFab() }
+    private var isFabDockedToRight = true // 记录FAB停靠方向
+
+    // 返回键防误触相关
+    private var backPressCount = 0
+    private var lastBackPressTime = 0L
 
     private var uploadMessage: ValueCallback<Array<Uri>>? = null
 
@@ -123,6 +133,84 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             window.attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
 
+        // 注册返回键回调
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                val currentUrl = binding.webView.url
+                var host: String? = null
+                try {
+                    if (currentUrl != null) {
+                        host = Uri.parse(currentUrl).host
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+                
+                val prefs = PreferenceManager.getDefaultSharedPreferences(this@MainActivity)
+                val blockedDomainsStr = prefs.getString("blocked_domains", "") ?: ""
+                // 支持中文逗号和英文逗号分隔
+                val blockedDomains = blockedDomainsStr.split(Regex("[,，]"))
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .map {
+                        // 如果用户输入了完整的 URL (如 https://www.poe.com)，尝试提取域名
+                        if (it.contains("://")) {
+                            try {
+                                Uri.parse(it).host ?: it
+                            } catch (e: Exception) {
+                                it
+                            }
+                        } else {
+                            it
+                        }
+                    }
+                
+                // 检查当前域名是否在列表中
+                var isBlocked = false
+                if (host != null) {
+                    for (domain in blockedDomains) {
+                        if (host.contains(domain, ignoreCase = true)) {
+                            isBlocked = true
+                            break
+                        }
+                    }
+                }
+
+                if (isBlocked) {
+                    val currentTime = System.currentTimeMillis()
+                    if (currentTime - lastBackPressTime > 2000) {
+                        // 超过2秒重置计数
+                        backPressCount = 0
+                    }
+                    
+                    backPressCount++
+                    lastBackPressTime = currentTime
+                    
+                    if (backPressCount < 3) {
+                        Toast.makeText(this@MainActivity, "再按 ${3 - backPressCount} 次返回", Toast.LENGTH_SHORT).show()
+                        // 拦截返回键，不执行任何操作
+                        return
+                    } else {
+                        // 达到3次，重置并允许操作
+                        backPressCount = 0
+                    }
+                } else {
+                    // 非受限域名，重置计数
+                    backPressCount = 0
+                }
+
+                // 执行返回逻辑
+                if (binding.webView.canGoBack()) {
+                    binding.webView.goBack()
+                } else {
+                    // 无法后退时，交给系统处理（退出应用）
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                    isEnabled = true
+                }
+            }
+        })
+
         ViewCompat.setOnApplyWindowInsetsListener(binding.root) { view, windowInsets ->
             val insets = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime())
             val prefs = PreferenceManager.getDefaultSharedPreferences(this)
@@ -194,6 +282,11 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                     binding.progressBar.visibility = View.GONE
                     binding.etUrl.setText(url)
                     injectNotificationPolyfill(view)
+                    
+                    // 保存当前 URL
+                    if (url != null && url.startsWith("http")) {
+                        sharedPreferences.edit().putString("last_url", url).apply()
+                    }
                 }
                 
                 override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
@@ -259,6 +352,13 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             startActivity(Intent(this, SettingsActivity::class.java))
         }
 
+        binding.btnHideAddressBar.setOnClickListener {
+            // 更新设置并隐藏地址栏
+            val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+            prefs.edit().putBoolean("hide_address_bar", true).apply()
+            hideAddressBar()
+        }
+
         binding.btnBookmark.setOnClickListener {
             showBookmarkPopup(it)
         }
@@ -288,6 +388,9 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         binding.fabShowAddressBar.setOnTouchListener { view, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
+                    // 触摸时取消自动隐藏，恢复完全显示
+                    resetFabState()
+                    
                     dX = view.x - event.rawX
                     dY = view.y - event.rawY
                     startX = view.x
@@ -317,15 +420,17 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                         // 吸附到边缘
                         val screenWidth = resources.displayMetrics.widthPixels
                         val viewWidth = view.width
-                        // 简单的吸附逻辑：如果在屏幕左半边就吸附到左边，右半边吸附到右边
-                        // 预留一些边距 (32px)
-                        val targetX = if (view.x + viewWidth / 2 > screenWidth / 2) {
+                        
+                        // 判断吸附方向
+                        isFabDockedToRight = view.x + viewWidth / 2 > screenWidth / 2
+                        
+                        val targetX = if (isFabDockedToRight) {
                             screenWidth - viewWidth - 32f
                         } else {
                             32f
                         }
                         
-                        // 限制 Y 轴范围，防止拖出屏幕
+                        // 限制 Y 轴范围
                         val screenHeight = resources.displayMetrics.heightPixels
                         val statusBarHeight = 100 // 估算值
                         val navBarHeight = 150 // 估算值
@@ -337,6 +442,10 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                             .x(targetX)
                             .y(targetY)
                             .setDuration(300)
+                            .withEndAction {
+                                // 吸附动画结束后，开始计时自动隐藏
+                                scheduleFabAutoHide()
+                            }
                             .start()
                     }
                     true
@@ -344,6 +453,39 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                 else -> false
             }
         }
+    }
+
+    private fun resetFabState() {
+        fabHandler.removeCallbacks(fabAutoHideRunnable)
+        binding.fabShowAddressBar.animate().cancel()
+        binding.fabShowAddressBar.alpha = 1.0f
+        
+        // 如果之前是半隐藏状态（位置偏移了），需要恢复到正常吸附位置
+        // 这里简单处理：因为 ACTION_MOVE 会立即更新位置，所以这里主要重置透明度即可
+    }
+
+    private fun scheduleFabAutoHide() {
+        fabHandler.removeCallbacks(fabAutoHideRunnable)
+        fabHandler.postDelayed(fabAutoHideRunnable, 3000) // 3秒后自动隐藏
+    }
+
+    private fun partiallyHideFab() {
+        val view = binding.fabShowAddressBar
+        val screenWidth = resources.displayMetrics.widthPixels
+        val viewWidth = view.width
+        
+        // 计算半隐藏的目标位置：露出 1/3
+        val targetX = if (isFabDockedToRight) {
+            (screenWidth - viewWidth * 0.3f) // 右侧：向右移动，只留左边一点
+        } else {
+            (viewWidth * 0.3f - viewWidth) // 左侧：向左移动，只留右边一点
+        }
+        
+        view.animate()
+            .x(targetX)
+            .alpha(0.5f) // 同时降低透明度，减少干扰
+            .setDuration(500)
+            .start()
     }
     
     private fun loadUrl(url: String) {
@@ -399,7 +541,6 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             // 地址栏在底部，弹窗显示在上方
             // 需要测量弹窗高度以准确显示在上方，或者使用 Gravity.BOTTOM
             popupBinding.root.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
-            val popupHeight = popupBinding.root.measuredHeight
             
             // 获取 anchorView 在屏幕上的位置
             val location = IntArray(2)
@@ -473,6 +614,16 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
 
     private fun loadHomePage() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        
+        // 检查是否需要恢复上次浏览的页面
+        if (prefs.getBoolean("restore_last_page", false)) {
+            val lastUrl = prefs.getString("last_url", null)
+            if (!lastUrl.isNullOrEmpty()) {
+                binding.webView.loadUrl(lastUrl)
+                return
+            }
+        }
+        
         val homePage = prefs.getString("home_page", "https://www.google.com") ?: "https://www.google.com"
         binding.webView.loadUrl(homePage)
     }
@@ -660,8 +811,12 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
     private fun hideAddressBar() {
         binding.appBarLayout.visibility = View.GONE
         binding.fabShowAddressBar.visibility = View.VISIBLE
+        binding.fabShowAddressBar.alpha = 1.0f // 确保显示时是不透明的
         isAddressBarVisible = false
         ViewCompat.requestApplyInsets(binding.root)
+        
+        // 隐藏地址栏显示 FAB 后，开始计时自动隐藏
+        scheduleFabAutoHide()
     }
     
     private fun showAddressBar() {
@@ -669,6 +824,9 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         binding.fabShowAddressBar.visibility = View.GONE
         isAddressBarVisible = true
         ViewCompat.requestApplyInsets(binding.root)
+        
+        // 显示地址栏时，取消 FAB 的自动隐藏计时
+        fabHandler.removeCallbacks(fabAutoHideRunnable)
     }
     
     override fun onResume() {
@@ -683,13 +841,6 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             binding.webView.onPause()
         }
         super.onPause()
-    }
-    
-    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_BACK && binding.webView.canGoBack()) {
-            binding.webView.goBack()
-        }
-        return super.onKeyDown(keyCode, event)
     }
     
     override fun onDestroy() {

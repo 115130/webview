@@ -81,6 +81,15 @@
                 android:src="@android:drawable/ic_menu_more"
                 app:tint="@color/white" />
 
+            <ImageButton
+                android:id="@+id/btnHideAddressBar"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Hide Address Bar"
+                android:src="@drawable/ic_expand_less"
+                app:tint="@color/white" />
+
         </LinearLayout>
 
     </com.google.android.material.appbar.AppBarLayout>

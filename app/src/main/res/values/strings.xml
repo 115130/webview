@@ -66,4 +66,10 @@
     <string name="pref_home_page">主页地址</string>
     <string name="pref_home_page_summary">设置浏览器启动时的主页</string>
     <string name="show_address_bar">显示地址栏</string>
+    
+    <string name="pref_blocked_domains">防误触域名列表</string>
+    <string name="pref_blocked_domains_summary">输入域名列表（用逗号分隔），在这些域名下需连续按3次返回键才能返回上一页</string>
+    
+    <string name="pref_restore_last_page">恢复上次浏览页面</string>
+    <string name="pref_restore_last_page_summary">启动时自动打开上次关闭时的网页</string>
 </resources>

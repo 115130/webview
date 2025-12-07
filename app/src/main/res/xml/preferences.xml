@@ -42,12 +42,28 @@
         android:title="@string/pref_category_browser"
         app:iconSpaceReserved="false">
 
+        <SwitchPreferenceCompat
+            android:key="restore_last_page"
+            android:title="@string/pref_restore_last_page"
+            android:summary="@string/pref_restore_last_page_summary"
+            android:defaultValue="false"
+            app:iconSpaceReserved="false" />
+
         <EditTextPreference
             android:key="home_page"
             android:title="@string/pref_home_page"
             android:summary="@string/pref_home_page_summary"
             android:defaultValue="https://www.google.com"
             app:iconSpaceReserved="false" />
+
+        <Preference
+            android:key="blocked_domains_settings"
+            android:title="@string/pref_blocked_domains"
+            android:summary="@string/pref_blocked_domains_summary"
+            app:iconSpaceReserved="false">
+            <intent android:targetPackage="com.webview.browser"
+                android:targetClass="com.webview.browser.BlockedDomainsActivity"/>
+        </Preference>
 
         <ListPreference
             android:key="user_agent"
