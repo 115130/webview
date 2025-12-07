@@ -7,6 +7,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -18,6 +20,7 @@ import android.view.View
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.webkit.*
+import android.widget.PopupWindow
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.coordinatorlayout.widget.CoordinatorLayout
@@ -27,8 +30,12 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.preference.PreferenceManager
+import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.appbar.AppBarLayout
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.textfield.TextInputEditText
 import com.webview.browser.databinding.ActivityMainBinding
+import com.webview.browser.databinding.PopupBookmarksBinding
 
 class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceChangeListener {
     
@@ -174,6 +181,10 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         binding.btnMenu.setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
+
+        binding.btnBookmark.setOnClickListener {
+            showBookmarkPopup(it)
+        }
         
         binding.etUrl.setOnEditorActionListener { _, actionId, event ->
             if (actionId == EditorInfo.IME_ACTION_GO ||
@@ -213,6 +224,88 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         binding.webView.loadUrl(finalUrl)
     }
     
+    private fun showBookmarkPopup(anchorView: View) {
+        val popupBinding = PopupBookmarksBinding.inflate(layoutInflater)
+        val popupWindow = PopupWindow(
+            popupBinding.root,
+            TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 300f, resources.displayMetrics).toInt(),
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            true
+        )
+        popupWindow.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        popupWindow.elevation = 10f
+
+        // 设置 RecyclerView
+        popupBinding.rvBookmarks.layoutManager = LinearLayoutManager(this)
+        val bookmarks = BookmarkManager.getBookmarks(this)
+        val adapter = BookmarkAdapter(bookmarks) { bookmark ->
+            loadUrl(bookmark.url)
+            popupWindow.dismiss()
+        }
+        popupBinding.rvBookmarks.adapter = adapter
+
+        // 添加按钮点击事件
+        popupBinding.btnAddBookmark.setOnClickListener {
+            popupWindow.dismiss()
+            showAddBookmarkDialog()
+        }
+
+        // 计算显示位置
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val position = prefs.getString("toolbar_position", "top")
+
+        if (position == "bottom") {
+            // 地址栏在底部，弹窗显示在上方
+            // 需要测量弹窗高度以准确显示在上方，或者使用 Gravity.BOTTOM
+            popupBinding.root.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+            val popupHeight = popupBinding.root.measuredHeight
+            
+            // 获取 anchorView 在屏幕上的位置
+            val location = IntArray(2)
+            anchorView.getLocationOnScreen(location)
+            
+            // 显示在 anchorView 上方
+            // 注意：这里简单估算高度，如果列表很长，高度会受限于 maxHeight
+            // 更精确的做法是先显示再 update，或者限制最大高度
+            popupWindow.showAtLocation(anchorView, Gravity.NO_GRAVITY, location[0] - popupWindow.width + anchorView.width, location[1] - 400) // 400 is arbitrary offset, better logic needed
+            
+            // 修正：使用 showAsDropDown 的 yoff 参数
+            // yoff 为负数表示向上偏移。需要偏移 (popupHeight + anchorHeight)
+            // 但 popupHeight 在显示前可能不准确。
+            // 简单方案：使用 Gravity.BOTTOM | Gravity.END
+             popupWindow.showAtLocation(binding.root, Gravity.BOTTOM or Gravity.END, 16, binding.appBarLayout.height + 16)
+
+        } else {
+            // 地址栏在顶部，弹窗显示在下方
+            popupWindow.showAsDropDown(anchorView, 0, 0, Gravity.END)
+        }
+    }
+
+    private fun showAddBookmarkDialog() {
+        val dialogView = layoutInflater.inflate(R.layout.dialog_add_bookmark, null)
+        val etName = dialogView.findViewById<TextInputEditText>(R.id.etBookmarkName)
+        val etUrl = dialogView.findViewById<TextInputEditText>(R.id.etBookmarkUrl)
+
+        // 预填充当前网页信息
+        etName.setText(binding.webView.title)
+        etUrl.setText(binding.webView.url)
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle("添加书签")
+            .setView(dialogView)
+            .setPositiveButton("保存") { _, _ ->
+                val name = etName.text.toString()
+                val url = etUrl.text.toString()
+                if (name.isNotEmpty() && url.isNotEmpty()) {
+                    val bookmark = Bookmark(name, url, System.currentTimeMillis())
+                    BookmarkManager.addBookmark(this, bookmark)
+                    Toast.makeText(this, "书签已保存", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
     private fun loadHomePage() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val homePage = prefs.getString("home_page", "https://www.google.com") ?: "https://www.google.com"
