@@ -181,3 +181,35 @@ Android WebView 默认不支持 HTML5 Notification API。本项目通过以下�
 2.  **CameraX 集成**：
     *   使用 Jetpack CameraX 库替代系统相机应用，提供更统一的拍照体验。
     *   自定义 `CameraActivity`，包含预览和拍照功能。
+
+## 6. 新增功能实现细节 (v1.2)
+
+### 6.1 地址栏优化与悬浮按钮增强
+
+*   **收起地址栏**：在地址栏右侧新增了收起按钮 (`ic_expand_less`)，点击即可隐藏地址栏并显示悬浮按钮 (FAB)。
+*   **FAB 自动半隐藏**：
+    *   为了减少对网页内容的遮挡，FAB 在闲置 3 秒后会自动移动到屏幕边缘，只露出 30% 的宽度并降低透明度。
+    *   **实现**：使用 `Handler` 和 `Runnable` 进行倒计时，配合 `ViewPropertyAnimator` 实现平滑的位移和透明度动画。触摸 FAB 会立即重置状态。
+*   **FAB 位置记忆**：
+    *   FAB 的位置现在会持久化保存到 `SharedPreferences` (`fab_x`, `fab_y`)。
+    *   无论应用重启还是切换地址栏显示状态，FAB 都会停留在用户上次拖动到的位置。
+
+### 6.2 智能返回与防误触机制
+
+*   **智能返回 (`OnBackPressedCallback`)**：
+    *   重构了返回逻辑，使用 `OnBackPressedDispatcher` 替代过时的 `onBackPressed`。
+    *   **逻辑**：优先检查 `webView.canGoBack()`。如果可以后退，则执行网页后退；否则才执行系统默认的返回操作（退出应用）。
+*   **防误触域名管理**：
+    *   **配置页面**：新增 `BlockedDomainsActivity`，提供可视化的域名管理界面（类似书签管理）。
+    *   **逻辑**：
+        *   当用户处于防误触列表中的域名时，按下返回键会被拦截。
+        *   系统会显示 Toast 提示"再按 X 次返回"。
+        *   用户必须在 2 秒内连续按 3 次返回键，才能执行后退或退出操作。
+        *   **优先级**：防误触检查优先于网页后退检查。即使是"恢复上次浏览"打开的页面（无法后退），在防误触域名下退出应用也需要三连击。
+    *   **域名匹配**：支持自动提取用户输入 URL 的域名部分，匹配时忽略大小写。
+
+### 6.3 恢复上次浏览页面
+
+*   **实现**：
+    *   **保存**：在 `WebViewClient.onPageFinished` 中，将当前 URL 保存到 `SharedPreferences` (`last_url`)。
+    *   **恢复**：在 `MainActivity.loadHomePage` 中，检查 `restore_last_page` 设置。如果开启且存在保存的 URL，则加载该 URL；否则加载默认主页。

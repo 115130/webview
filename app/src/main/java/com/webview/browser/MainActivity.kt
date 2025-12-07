@@ -443,7 +443,8 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                             .y(targetY)
                             .setDuration(300)
                             .withEndAction {
-                                // 吸附动画结束后，开始计时自动隐藏
+                                // 吸附动画结束后，保存位置并开始计时自动隐藏
+                                saveFabPosition(targetX, targetY)
                                 scheduleFabAutoHide()
                             }
                             .start()
@@ -451,6 +452,31 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                     true
                 }
                 else -> false
+            }
+        }
+    }
+
+    private fun saveFabPosition(x: Float, y: Float) {
+        sharedPreferences.edit()
+            .putFloat("fab_x", x)
+            .putFloat("fab_y", y)
+            .apply()
+    }
+
+    private fun restoreFabPosition() {
+        if (sharedPreferences.contains("fab_x") && sharedPreferences.contains("fab_y")) {
+            val x = sharedPreferences.getFloat("fab_x", 0f)
+            val y = sharedPreferences.getFloat("fab_y", 0f)
+            
+            binding.fabShowAddressBar.x = x
+            binding.fabShowAddressBar.y = y
+            
+            // 更新停靠方向状态
+            val screenWidth = resources.displayMetrics.widthPixels
+            val viewWidth = binding.fabShowAddressBar.width
+            // 如果 width 为 0 (未测量)，则无法准确判断，但通常 restore 在显示后调用
+            if (viewWidth > 0) {
+                isFabDockedToRight = x + viewWidth / 2 > screenWidth / 2
             }
         }
     }
@@ -815,8 +841,12 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         isAddressBarVisible = false
         ViewCompat.requestApplyInsets(binding.root)
         
-        // 隐藏地址栏显示 FAB 后，开始计时自动隐藏
-        scheduleFabAutoHide()
+        // 恢复上次保存的位置
+        binding.fabShowAddressBar.post {
+            restoreFabPosition()
+            // 隐藏地址栏显示 FAB 后，开始计时自动隐藏
+            scheduleFabAutoHide()
+        }
     }
     
     private fun showAddressBar() {
