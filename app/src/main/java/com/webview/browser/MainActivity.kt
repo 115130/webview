@@ -1,12 +1,14 @@
 package com.webview.browser
 
 import android.annotation.SuppressLint
+import android.Manifest
 import android.app.Activity
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
@@ -27,7 +29,9 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.coordinatorlayout.widget.CoordinatorLayout
+import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -69,6 +73,32 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             uploadMessage?.onReceiveValue(null)
         }
         uploadMessage = null
+    }
+
+    private val cameraLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val uri = result.data?.data
+            if (uri != null) {
+                uploadMessage?.onReceiveValue(arrayOf(uri))
+            } else {
+                uploadMessage?.onReceiveValue(null)
+            }
+        } else {
+            uploadMessage?.onReceiveValue(null)
+        }
+        uploadMessage = null
+    }
+
+    private val requestCameraPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        if (isGranted) {
+            launchCamera()
+        } else {
+            Toast.makeText(this, "需要相机权限才能拍照", Toast.LENGTH_SHORT).show()
+            uploadMessage?.onReceiveValue(null)
+            uploadMessage = null
+        }
     }
     
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -196,12 +226,10 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                     }
                     uploadMessage = filePathCallback
 
-                    val intent = fileChooserParams?.createIntent()
-                    try {
-                        fileChooserLauncher.launch(intent)
-                    } catch (e: Exception) {
-                        uploadMessage = null
-                        return false
+                    if (fileChooserParams?.isCaptureEnabled == true) {
+                        checkCameraPermissionAndLaunch()
+                    } else {
+                        launchFileChooser(fileChooserParams)
                     }
                     return true
                 }
@@ -417,6 +445,30 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             }
             .setNegativeButton("取消", null)
             .show()
+    }
+
+    private fun checkCameraPermissionAndLaunch() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            launchCamera()
+        } else {
+            requestCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    private fun launchCamera() {
+        val intent = Intent(this, CameraActivity::class.java)
+        cameraLauncher.launch(intent)
+    }
+
+    private fun launchFileChooser(fileChooserParams: WebChromeClient.FileChooserParams?) {
+        val intent = fileChooserParams?.createIntent()
+        try {
+            fileChooserLauncher.launch(intent)
+        } catch (e: Exception) {
+            uploadMessage?.onReceiveValue(null)
+            uploadMessage = null
+            Toast.makeText(this, "无法打开文件选择器", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun loadHomePage() {

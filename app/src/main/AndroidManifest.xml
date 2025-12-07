@@ -38,6 +38,12 @@
             android:label="@string/settings"
             android:parentActivityName=".MainActivity" />
 
+        <activity
+            android:name=".CameraActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.WebViewBrowser.Fullscreen" />
+
         <service
             android:name=".KeepAliveService"
             android:enabled="true"
