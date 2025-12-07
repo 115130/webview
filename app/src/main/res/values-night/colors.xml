@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#90CAF9</color>
+    <color name="primary_dark">#000000</color>
+    <color name="primary_light">#1E1E1E</color>
+    <color name="accent">#FFB74D</color>
+    <color name="accent_dark">#F57C00</color>
+    
+    <!-- Hack: Redefine white/black for dark mode to avoid layout refactoring -->
+    <color name="white">#121212</color>
+    <color name="black">#FFFFFF</color>
+    
+    <color name="gray">#9E9E9E</color>
+    <color name="gray_light">#303030</color>
+    <color name="text_primary">#FFFFFF</color>
+    <color name="text_secondary">#B0B0B0</color>
+</resources>

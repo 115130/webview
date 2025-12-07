@@ -27,6 +27,13 @@
             android:defaultValue="false"
             app:iconSpaceReserved="false" />
 
+        <SwitchPreferenceCompat
+            android:key="dark_mode"
+            android:title="@string/pref_dark_mode"
+            android:summary="@string/pref_dark_mode_summary"
+            android:defaultValue="false"
+            app:iconSpaceReserved="false" />
+
         <ListPreference
             android:key="toolbar_position"
             android:title="@string/pref_toolbar_position"
