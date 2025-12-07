@@ -1,6 +1,7 @@
 package com.webview.browser
 
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
@@ -16,12 +17,14 @@ import android.provider.Settings
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.webkit.*
 import android.widget.PopupWindow
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.coordinatorlayout.widget.CoordinatorLayout
 import androidx.core.app.NotificationCompat
@@ -36,12 +39,37 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.textfield.TextInputEditText
 import com.webview.browser.databinding.ActivityMainBinding
 import com.webview.browser.databinding.PopupBookmarksBinding
+import kotlin.math.abs
 
 class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceChangeListener {
     
     private lateinit var binding: ActivityMainBinding
     private var isAddressBarVisible = true
     private lateinit var sharedPreferences: SharedPreferences
+
+    private var uploadMessage: ValueCallback<Array<Uri>>? = null
+
+    private val fileChooserLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val data = result.data
+            var results: Array<Uri>? = null
+            if (data != null) {
+                val dataString = data.dataString
+                val clipData = data.clipData
+                if (clipData != null) {
+                    results = Array(clipData.itemCount) { i ->
+                        clipData.getItemAt(i).uri
+                    }
+                } else if (dataString != null) {
+                    results = arrayOf(Uri.parse(dataString))
+                }
+            }
+            uploadMessage?.onReceiveValue(results)
+        } else {
+            uploadMessage?.onReceiveValue(null)
+        }
+        uploadMessage = null
+    }
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -156,6 +184,27 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                     super.onReceivedTitle(view, title)
                     // 可以在这里更新标题
                 }
+
+                override fun onShowFileChooser(
+                    webView: WebView?,
+                    filePathCallback: ValueCallback<Array<Uri>>?,
+                    fileChooserParams: FileChooserParams?
+                ): Boolean {
+                    if (uploadMessage != null) {
+                        uploadMessage?.onReceiveValue(null)
+                        uploadMessage = null
+                    }
+                    uploadMessage = filePathCallback
+
+                    val intent = fileChooserParams?.createIntent()
+                    try {
+                        fileChooserLauncher.launch(intent)
+                    } catch (e: Exception) {
+                        uploadMessage = null
+                        return false
+                    }
+                    return true
+                }
             }
             
         }
@@ -196,12 +245,76 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             }
         }
         
-        // 悬浮按钮点击显示地址栏
-        binding.fabShowAddressBar.setOnClickListener {
-            // 点击悬浮按钮显示地址栏，并更新设置
-            val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-            prefs.edit().putBoolean("hide_address_bar", false).apply()
-            showAddressBar()
+        // 设置可拖动悬浮按钮
+        setupDraggableFab()
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setupDraggableFab() {
+        var dX = 0f
+        var dY = 0f
+        var startX = 0f
+        var startY = 0f
+        var startTime = 0L
+
+        binding.fabShowAddressBar.setOnTouchListener { view, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    dX = view.x - event.rawX
+                    dY = view.y - event.rawY
+                    startX = view.x
+                    startY = view.y
+                    startTime = System.currentTimeMillis()
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    view.animate()
+                        .x(event.rawX + dX)
+                        .y(event.rawY + dY)
+                        .setDuration(0)
+                        .start()
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    val isClick = (System.currentTimeMillis() - startTime) < 200 &&
+                            abs(view.x - startX) < 10 && abs(view.y - startY) < 10
+
+                    if (isClick) {
+                        view.performClick()
+                        // 点击悬浮按钮显示地址栏，并更新设置
+                        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+                        prefs.edit().putBoolean("hide_address_bar", false).apply()
+                        showAddressBar()
+                    } else {
+                        // 吸附到边缘
+                        val screenWidth = resources.displayMetrics.widthPixels
+                        val viewWidth = view.width
+                        // 简单的吸附逻辑：如果在屏幕左半边就吸附到左边，右半边吸附到右边
+                        // 预留一些边距 (32px)
+                        val targetX = if (view.x + viewWidth / 2 > screenWidth / 2) {
+                            screenWidth - viewWidth - 32f
+                        } else {
+                            32f
+                        }
+                        
+                        // 限制 Y 轴范围，防止拖出屏幕
+                        val screenHeight = resources.displayMetrics.heightPixels
+                        val statusBarHeight = 100 // 估算值
+                        val navBarHeight = 150 // 估算值
+                        var targetY = view.y
+                        if (targetY < statusBarHeight) targetY = statusBarHeight.toFloat()
+                        if (targetY > screenHeight - navBarHeight - view.height) targetY = (screenHeight - navBarHeight - view.height).toFloat()
+
+                        view.animate()
+                            .x(targetX)
+                            .y(targetY)
+                            .setDuration(300)
+                            .start()
+                    }
+                    true
+                }
+                else -> false
+            }
         }
     }
     
