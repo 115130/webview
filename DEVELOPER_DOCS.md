@@ -9,6 +9,8 @@
 *   **后台保活**：通过前台服务和 WakeLock 防止应用在后台被系统杀掉，支持 AI 网页持续运行。
 *   **网页通知桥接**：将网页的 HTML5 Notification 转发为 Android 系统通知。
 *   **高度可配置**：支持自定义 User Agent、JavaScript 开关、地址栏位置等。
+*   **书签管理**：支持添加和管理网页书签。
+*   **原生拍照**：集成 CameraX 实现应用内拍照上传。
 
 ## 2. 核心类说明
 
@@ -35,6 +37,15 @@
         *   设置 `mediaPlaybackRequiresUserGesture = false` 允许后台自动播放音频。
         *   **注入 JS 接口**：`addJavascriptInterface(WebAppInterface(...), "Android")`。
         *   设置 `WebViewClient` 和 `WebChromeClient`。
+        *   **文件选择处理**：重写 `onShowFileChooser`，根据 `isCaptureEnabled` 智能判断是启动相机还是文件选择器。
+
+*   **`setupDraggableFab()`**
+    *   **作用**：初始化可拖动的悬浮按钮。
+    *   **逻辑**：
+        *   使用 `setOnTouchListener` 监听触摸事件。
+        *   处理拖动位移。
+        *   区分点击和拖动操作。
+        *   实现松手后的自动边缘吸附动画。
 
 *   **`injectNotificationPolyfill(view: WebView?)`**
     *   **作用**：在网页加载开始和结束时注入 JavaScript 代码。
@@ -91,6 +102,24 @@
 
 基于 `PreferenceFragmentCompat` 的设置页面，负责加载 `xml/preferences.xml` 并处理用户交互。
 
+### 2.4 BookmarkManager.kt
+
+负责书签数据的持久化存储和管理。
+
+*   **功能**：
+    *   使用 `SharedPreferences` 存储书签列表（JSON 格式）。
+    *   提供 `addBookmark`、`getBookmarks`、`removeBookmark` 等方法。
+    *   自动按时间戳排序。
+
+### 2.5 CameraActivity.kt
+
+基于 CameraX 实现的自定义相机界面。
+
+*   **功能**：
+    *   集成 CameraX 预览 (`Preview`) 和拍照 (`ImageCapture`) 用例。
+    *   提供简单的拍照 UI（快门按钮）。
+    *   拍照后将图片保存到应用缓存目录，并通过 `setResult` 返回 URI。
+
 ## 3. 关键技术实现细节
 
 ### 3.1 解决键盘遮挡与全屏白条问题
@@ -118,3 +147,37 @@ Android WebView 默认不支持 HTML5 Notification API。本项目通过以下�
 *   `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`: 用于申请白名单，防止电池优化杀后台。
 *   `WAKE_LOCK`: 用于保持 CPU 唤醒。
 *   `INTERNET`: 网络访问。
+*   `CAMERA`: 用于网页内拍照上传。
+
+## 5. 新增功能实现细节 (v1.1)
+
+### 5.1 书签功能
+
+*   **入口**：地址栏右侧的书签按钮。
+*   **交互**：
+    *   点击按钮弹出悬浮列表 (`PopupWindow`)。
+    *   列表位置根据地址栏位置（顶部/底部）自动调整，避免遮挡。
+    *   支持添加当前网页为书签，自动预填充标题和 URL。
+    *   数据存储在本地 `SharedPreferences` 中。
+
+### 5.2 可拖动悬浮按钮 (FAB)
+
+为了解决悬浮按钮遮挡网页内容的问题，实现了可拖动逻辑：
+*   **实现**：在 `MainActivity` 中使用 `setOnTouchListener` 替代 `setOnClickListener`。
+*   **逻辑**：
+    *   监听 `ACTION_MOVE` 更新按钮位置，实现全屏拖动。
+    *   监听 `ACTION_UP` 判断是点击还是拖动（基于位移和时间阈值）。
+    *   实现**自动吸附**：松手后按钮自动动画吸附到屏幕左侧或右侧边缘，保持界面整洁。
+
+### 5.3 文件上传与相机集成
+
+解决了 WebView 中 `<input type="file">` 无法使用的问题，并优化了拍照体验。
+
+1.  **智能分发 (`onShowFileChooser`)**：
+    *   重写 `WebChromeClient.onShowFileChooser`。
+    *   检查 `fileChooserParams.isCaptureEnabled`。
+    *   **直接拍照**：如果网页请求捕获（如点击相机图标），直接启动 `CameraActivity`。
+    *   **文件选择**：如果网页请求文件（如点击附件图标），直接启动系统文件选择器。
+2.  **CameraX 集成**：
+    *   使用 Jetpack CameraX 库替代系统相机应用，提供更统一的拍照体验。
+    *   自定义 `CameraActivity`，包含预览和拍照功能。
