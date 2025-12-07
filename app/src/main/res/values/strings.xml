@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WebView浏览器</string>
+    <string name="settings">设置</string>
+    <string name="url_hint">输入网址或搜索</string>
+    <string name="go">前往</string>
+    <string name="refresh">刷新</string>
+    <string name="forward">前进</string>
+    <string name="back">后退</string>
+    <string name="menu">菜单</string>
+    
+    <!-- 设置项 -->
+    <string name="pref_category_display">显示设置</string>
+    <string name="pref_hide_address_bar">隐藏地址栏</string>
+    <string name="pref_hide_address_bar_summary">勾选后隐藏地址栏，显示悬浮按钮</string>
+    <string name="pref_hide_status_bar">隐藏状态栏</string>
+    <string name="pref_hide_status_bar_summary">隐藏系统状态栏（沉浸式）</string>
+    <string name="pref_toolbar_position">地址栏位置</string>
+    <string name="pref_toolbar_position_summary">设置地址栏在顶部或底部</string>
+    <string name="pref_keep_alive">后台保活</string>
+    <string name="pref_keep_alive_summary">防止应用在后台被清理，适用于挂机场景</string>
+    
+    <string name="pref_category_browser">浏览器设置</string>
+    <string name="pref_user_agent">User Agent</string>
+    <string name="pref_user_agent_summary">选择浏览器标识</string>
+    <string name="pref_javascript">启用JavaScript</string>
+    <string name="pref_javascript_summary">允许网页运行JavaScript</string>
+    <string name="pref_desktop_mode">桌面模式</string>
+    <string name="pref_desktop_mode_summary">使用桌面版网页</string>
+    
+    <!-- User Agent 选项 -->
+    <string-array name="user_agent_entries">
+        <item>默认 (Android WebView)</item>
+        <item>Chrome (Android)</item>
+        <item>Chrome (Desktop)</item>
+        <item>Firefox (Android)</item>
+        <item>Safari (iOS)</item>
+        <item>Safari (Mac)</item>
+        <item>自定义</item>
+    </string-array>
+    
+    <string-array name="user_agent_values">
+        <item>default</item>
+        <item>chrome_android</item>
+        <item>chrome_desktop</item>
+        <item>firefox_android</item>
+        <item>safari_ios</item>
+        <item>safari_mac</item>
+        <item>custom</item>
+    </string-array>
+
+    <string-array name="toolbar_position_entries">
+        <item>顶部</item>
+        <item>底部</item>
+    </string-array>
+
+    <string-array name="toolbar_position_values">
+        <item>top</item>
+        <item>bottom</item>
+    </string-array>
+    
+    <string name="pref_custom_ua">自定义User Agent</string>
+    <string name="pref_custom_ua_summary">输入自定义的User Agent字符串</string>
+    
+    <string name="home_page">主页</string>
+    <string name="pref_home_page">主页地址</string>
+    <string name="pref_home_page_summary">设置浏览器启动时的主页</string>
+    <string name="show_address_bar">显示地址栏</string>
+</resources>
