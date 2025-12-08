@@ -19,6 +19,11 @@ android {
         targetSdk 34
         versionCode 1
         versionName "1.0"
+
+        ndk {
+            // Explicitly support these architectures
+            abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+        }
     }
 
     signingConfigs {
