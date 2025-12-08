@@ -60,6 +60,11 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
     private val fabAutoHideRunnable = Runnable { partiallyHideFab() }
     private var isFabDockedToRight = true // 记录FAB停靠方向
 
+    // 智能保活相关
+    private val keepAliveHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val stopKeepAliveRunnable = Runnable { disableKeepAlive() }
+    private var isKeepAliveActive = false
+
     // 返回键防误触相关
     private var backPressCount = 0
     private var lastBackPressTime = 0L
@@ -278,6 +283,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                     binding.progressBar.progress = 0
                     binding.etUrl.setText(url)
                     injectNotificationPolyfill(view)
+                    injectKeepAlivePolyfill(view)
                 }
                 
                 override fun onPageFinished(view: WebView?, url: String?) {
@@ -285,6 +291,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                     binding.progressBar.visibility = View.GONE
                     binding.etUrl.setText(url)
                     injectNotificationPolyfill(view)
+                    injectKeepAlivePolyfill(view)
                     
                     // 保存当前 URL
                     if (url != null && url.startsWith("http")) {
@@ -692,17 +699,11 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         val position = prefs.getString("toolbar_position", "top")
         applyToolbarPosition(position)
 
-        // 应用后台保活设置
-        if (prefs.getBoolean("keep_alive", false)) {
-            enableKeepAlive()
-        } else {
-            disableKeepAlive()
-        }
-
         // 应用深色模式设置
         val isDarkMode = prefs.getBoolean("dark_mode", false)
         if (isDarkMode) {
             AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
+            @Suppress("DEPRECATION")
             if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
                 WebSettingsCompat.setForceDark(binding.webView.settings, WebSettingsCompat.FORCE_DARK_ON)
             }
@@ -711,6 +712,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             }
         } else {
             AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO)
+            @Suppress("DEPRECATION")
             if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
                 WebSettingsCompat.setForceDark(binding.webView.settings, WebSettingsCompat.FORCE_DARK_OFF)
             }
@@ -721,6 +723,12 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
     }
     
     private fun enableKeepAlive() {
+        if (isKeepAliveActive) return
+        isKeepAliveActive = true
+        
+        // 取消停止服务的倒计时
+        keepAliveHandler.removeCallbacks(stopKeepAliveRunnable)
+
         try {
             // 启动前台服务
             val intent = Intent(this, KeepAliveService::class.java)
@@ -731,7 +739,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             }
         } catch (e: Exception) {
             e.printStackTrace()
-            Toast.makeText(this, "启动保活服务失败: ${e.message}", Toast.LENGTH_SHORT).show()
+            // Toast.makeText(this, "启动保活服务失败: ${e.message}", Toast.LENGTH_SHORT).show()
         }
         
         // 请求忽略电池优化
@@ -750,8 +758,113 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
     }
 
     private fun disableKeepAlive() {
+        isKeepAliveActive = false
         val intent = Intent(this, KeepAliveService::class.java)
         stopService(intent)
+    }
+
+    private fun injectKeepAlivePolyfill(view: WebView?) {
+        val js = """
+            (function() {
+                if (window.keepAliveInjected) return;
+                window.keepAliveInjected = true;
+
+                let activeTasks = 0;
+                let isLocked = false;
+
+                function updateLock() {
+                    if (activeTasks > 0 && !isLocked) {
+                        isLocked = true;
+                        console.log("Acquiring WakeLock, tasks: " + activeTasks);
+                        Android.acquireWakeLock();
+                    } else if (activeTasks === 0 && isLocked) {
+                        isLocked = false;
+                        console.log("Releasing WakeLock");
+                        Android.releaseWakeLock();
+                    }
+                }
+
+                // Hook Fetch
+                const originalFetch = window.fetch;
+                window.fetch = async function(...args) {
+                    activeTasks++;
+                    updateLock();
+                    try {
+                        return await originalFetch(...args);
+                    } finally {
+                        activeTasks--;
+                        updateLock();
+                    }
+                };
+
+                // Hook XMLHttpRequest
+                const originalXHROpen = XMLHttpRequest.prototype.open;
+                const originalXHRSend = XMLHttpRequest.prototype.send;
+                
+                XMLHttpRequest.prototype.open = function(...args) {
+                    this._isActive = false;
+                    originalXHROpen.apply(this, args);
+                };
+
+                XMLHttpRequest.prototype.send = function(...args) {
+                    if (!this._isActive) {
+                        this._isActive = true;
+                        activeTasks++;
+                        updateLock();
+                        
+                        this.addEventListener('loadend', () => {
+                            if (this._isActive) {
+                                this._isActive = false;
+                                activeTasks--;
+                                updateLock();
+                            }
+                        });
+                    }
+                    originalXHRSend.apply(this, args);
+                };
+
+                // Hook WebSocket
+                const OriginalWebSocket = window.WebSocket;
+                window.WebSocket = function(...args) {
+                    const ws = new OriginalWebSocket(...args);
+                    activeTasks++;
+                    updateLock();
+                    
+                    ws.addEventListener('close', () => {
+                        // WebSocket 断开后，延迟 30 秒再释放计数
+                        // 这样可以覆盖断线重连的时间窗口
+                        setTimeout(() => {
+                            activeTasks--;
+                            updateLock();
+                        }, 30000);
+                    });
+                    
+                    ws.addEventListener('error', () => {
+                        // Error usually leads to close, but just in case
+                    });
+                    
+                    return ws;
+                };
+
+                // Hook Audio/Video
+                document.addEventListener('play', function(e) {
+                    activeTasks++;
+                    updateLock();
+                }, true);
+
+                document.addEventListener('pause', function(e) {
+                    activeTasks--;
+                    updateLock();
+                }, true);
+                
+                document.addEventListener('ended', function(e) {
+                    activeTasks--;
+                    updateLock();
+                }, true);
+
+            })();
+        """.trimIndent()
+        view?.evaluateJavascript(js, null)
     }
 
     private fun injectNotificationPolyfill(view: WebView?) {
@@ -808,6 +921,22 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
 
             val manager = mContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             manager.notify(System.currentTimeMillis().toInt(), builder.build())
+        }
+
+        @JavascriptInterface
+        fun acquireWakeLock() {
+            runOnUiThread {
+                enableKeepAlive()
+            }
+        }
+
+        @JavascriptInterface
+        fun releaseWakeLock() {
+            runOnUiThread {
+                // 延迟 2 分钟释放锁
+                keepAliveHandler.removeCallbacks(stopKeepAliveRunnable)
+                keepAliveHandler.postDelayed(stopKeepAliveRunnable, 2 * 60 * 1000L)
+            }
         }
     }
 
@@ -897,9 +1026,14 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
     }
 
     override fun onPause() {
-        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        if (!prefs.getBoolean("keep_alive", false)) {
-            binding.webView.onPause()
+        // 如果正在保活（有活跃任务），则不暂停 WebView
+        if (!isKeepAliveActive) {
+            // 如果没有活跃任务，但我们仍在 2 分钟的 grace period 内，
+            // 理论上也应该保持 WebView 活跃以便 JS 能继续运行倒计时？
+            // 但这里是 Native 的倒计时。
+            // 为了安全起见，只要启用了保活机制（默认启用），我们就不暂停 WebView，
+            // 让系统通过 OOM Killer 或 Service 优先级来管理。
+            // binding.webView.onPause()
         }
         super.onPause()
     }
@@ -929,13 +1063,6 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             "toolbar_position" -> {
                 val position = sharedPreferences?.getString("toolbar_position", "top")
                 applyToolbarPosition(position)
-            }
-            "keep_alive" -> {
-                if (sharedPreferences?.getBoolean("keep_alive", false) == true) {
-                    enableKeepAlive()
-                } else {
-                    disableKeepAlive()
-                }
             }
             "user_agent", "custom_user_agent", "desktop_mode" -> {
                 applyUserAgent()

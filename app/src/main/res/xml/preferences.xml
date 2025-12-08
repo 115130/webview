@@ -21,13 +21,6 @@
             app:iconSpaceReserved="false" />
 
         <SwitchPreferenceCompat
-            android:key="keep_alive"
-            android:title="@string/pref_keep_alive"
-            android:summary="@string/pref_keep_alive_summary"
-            android:defaultValue="false"
-            app:iconSpaceReserved="false" />
-
-        <SwitchPreferenceCompat
             android:key="dark_mode"
             android:title="@string/pref_dark_mode"
             android:summary="@string/pref_dark_mode_summary"

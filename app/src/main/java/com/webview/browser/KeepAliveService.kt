@@ -83,7 +83,7 @@ class KeepAliveService : Service() {
             )
         }
         if (wakeLock?.isHeld == false) {
-            wakeLock?.acquire(10*60*1000L /*10 minutes*/)
+            wakeLock?.acquire()
         }
     }
     

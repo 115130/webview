@@ -6,7 +6,7 @@
 
 本项目是一个基于 Android WebView 的轻量级浏览器，具有以下核心特性：
 *   **沉浸式体验**：支持 Edge-to-Edge 布局，可隐藏状态栏和地址栏。
-*   **后台保活**：通过前台服务和 WakeLock 防止应用在后台被系统杀掉，支持 AI 网页持续运行。
+*   **智能后台保活**：默认开启，通过智能监测网页活动（网络请求、音频播放）来自动管理 WakeLock，支持 AI 网页持续运行。
 *   **网页通知桥接**：将网页的 HTML5 Notification 转发为 Android 系统通知。
 *   **高度可配置**：支持自定义 User Agent、JavaScript 开关、地址栏位置等。
 *   **书签管理**：支持添加和管理网页书签。
@@ -53,13 +53,22 @@
 
 *   **`applySettings()`**
     *   **作用**：读取用户偏好设置并应用到当前环境。
-    *   **逻辑**：根据 `SharedPreferences` 的值，调用 `applyUserAgent`、`hideAddressBar`、`enableKeepAlive` 等具体方法。
+    *   **逻辑**：根据 `SharedPreferences` 的值，调用 `applyUserAgent`、`hideAddressBar` 等具体方法。
 
 *   **`enableKeepAlive()` / `disableKeepAlive()`**
-    *   **作用**：开启或关闭后台保活模式。
+    *   **作用**：开启或关闭后台保活模式（内部调用，不再由用户直接控制）。
     *   **逻辑**：
         *   启动/停止 `KeepAliveService` 前台服务。
-        *   请求 `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` 权限（忽略电池优化），防止系统在后台休眠应用。
+        *   请求 `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` 权限。
+        *   **智能管理**：由 `injectKeepAlivePolyfill` 注入的 JS 代码触发。
+
+*   **`injectKeepAlivePolyfill(view: WebView?)`**
+    *   **作用**：注入 JavaScript 代码以监听网页活动。
+    *   **逻辑**：
+        *   Hook `fetch`, `XMLHttpRequest`, `WebSocket`, `Audio` 等 API。
+        *   维护 `activeTasks` 计数器。
+        *   当计数器从 0 变 1 时调用 `Android.acquireWakeLock()`。
+        *   当计数器从 1 变 0 时调用 `Android.releaseWakeLock()`。
 
 *   **`hideStatusBar()` / `showStatusBar()`**
     *   **作用**：控制系统状态栏的显示与隐藏。
@@ -79,7 +88,9 @@
 *   **`inner class WebAppInterface`**
     *   **作用**：供 JavaScript 调用的原生接口。
     *   **方法**：
-        *   `@JavascriptInterface showNotification(title: String, body: String)`: 接收网页通知内容，并构建发送 Android Notification。
+        *   `showNotification(title, body)`: 发送系统通知。
+        *   `acquireWakeLock()`: 请求获取 WakeLock（有活跃任务）。
+        *   `releaseWakeLock()`: 请求释放 WakeLock（无活跃任务，延迟释放）。
 
 ### 2.2 KeepAliveService.kt
 
@@ -213,3 +224,22 @@ Android WebView 默认不支持 HTML5 Notification API。本项目通过以下�
 *   **实现**：
     *   **保存**：在 `WebViewClient.onPageFinished` 中，将当前 URL 保存到 `SharedPreferences` (`last_url`)。
     *   **恢复**：在 `MainActivity.loadHomePage` 中，检查 `restore_last_page` 设置。如果开启且存在保存的 URL，则加载该 URL；否则加载默认主页。
+
+## 7. 新增功能实现细节 (v1.3)
+
+### 7.1 智能后台保活 (Smart Keep Alive)
+
+为了解决"手动开关保活不便"和"无法精确判断 AI 生成状态"的问题，v1.3 引入了智能保活机制。
+
+*   **设计理念**：默认开启，无感介入。只有在网页真正"忙碌"时才持有 WakeLock，闲置时自动释放以节省电量。
+*   **实现原理**：
+    1.  **JS 探针 (`injectKeepAlivePolyfill`)**：
+        *   **Fetch / XHR**：拦截请求开始和结束，计数器加减。
+        *   **WebSocket**：拦截连接建立和断开。**特殊处理**：断开连接后会延迟 30 秒才减少计数器，以覆盖断线重连的时间窗口，防止意外释放锁。
+        *   **Audio/Video**：监听 `play`, `pause`, `ended` 事件，计数器加减。
+    2.  **Native 联动 (`WebAppInterface`)**：
+        *   **上锁 (`acquireWakeLock`)**：当 JS 端检测到活跃任务数 > 0 时调用。Native 端立即启动前台服务并持有 WakeLock。
+        *   **解锁 (`releaseWakeLock`)**：当 JS 端检测到活跃任务数归 0 时调用。
+    3.  **防抖动机制 (Grace Period)**：
+        *   为了防止网络请求间隙或短暂停顿导致服务频繁重启，`releaseWakeLock` 不会立即释放锁。
+        *   **2 分钟倒计时**：Native 端收到解锁请求后，启动一个 2 分钟的定时器。只有在 2 分钟内没有新的上锁请求，才会真正停止服务和释放 WakeLock。
