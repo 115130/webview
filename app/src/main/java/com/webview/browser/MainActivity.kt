@@ -3,6 +3,7 @@ package com.webview.browser
 import android.annotation.SuppressLint
 import android.Manifest
 import android.app.Activity
+import android.app.Dialog
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
@@ -21,6 +22,7 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.webkit.*
@@ -39,11 +41,14 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.preference.PreferenceManager
+import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
 import com.google.android.material.appbar.AppBarLayout
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.floatingactionbutton.FloatingActionButton
 import com.google.android.material.textfield.TextInputEditText
 import com.webview.browser.databinding.ActivityMainBinding
 import com.webview.browser.databinding.PopupBookmarksBinding
@@ -54,6 +59,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
     private lateinit var binding: ActivityMainBinding
     private var isAddressBarVisible = true
     private lateinit var sharedPreferences: SharedPreferences
+    private var tabSwitcherDialog: Dialog? = null
     
     // FAB 自动隐藏相关
     private val fabHandler = android.os.Handler(android.os.Looper.getMainLooper())
@@ -62,8 +68,9 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
 
     // 智能保活相关
     private val keepAliveHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    private val stopKeepAliveRunnable = Runnable { disableKeepAlive() }
+    private val stopKeepAliveRunnable = Runnable { stopKeepAliveService() }
     private var isKeepAliveActive = false
+    private val wakeLockHolders = mutableSetOf<WebView>()
 
     // 返回键防误触相关
     private var backPressCount = 0
@@ -127,11 +134,29 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         sharedPreferences = PreferenceManager.getDefaultSharedPreferences(this)
         sharedPreferences.registerOnSharedPreferenceChangeListener(this)
         
-        setupWebView()
         setupToolbar()
-        loadHomePage()
-        applySettings()
         createNotificationChannel()
+
+        // 观察当前标签页变化
+        TabManager.currentTab.observe(this) { tab ->
+            binding.webViewContainer.removeAllViews()
+            if (tab != null) {
+                // 从父容器移除（如果有）
+                (tab.webView.parent as? ViewGroup)?.removeView(tab.webView)
+                binding.webViewContainer.addView(tab.webView)
+                
+                // 更新UI
+                binding.etUrl.setText(tab.url)
+                
+                // 更新 Insets
+                ViewCompat.requestApplyInsets(binding.root)
+            }
+        }
+
+        // 初始化标签页
+        if (TabManager.tabs.isEmpty()) {
+            createNewTab()
+        }
 
         // 强制使用 Edge-to-Edge 布局，以便手动处理 Insets (解决键盘遮挡问题)
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -144,7 +169,8 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         // 注册返回键回调
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                val currentUrl = binding.webView.url
+                val currentWebView = TabManager.currentTab.value?.webView ?: return
+                val currentUrl = currentWebView.url
                 var host: String? = null
                 try {
                     if (currentUrl != null) {
@@ -208,8 +234,8 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                 }
 
                 // 执行返回逻辑
-                if (binding.webView.canGoBack()) {
-                    binding.webView.goBack()
+                if (currentWebView.canGoBack()) {
+                    currentWebView.goBack()
                 } else {
                     // 无法后退时，交给系统处理（退出应用）
                     isEnabled = false
@@ -244,23 +270,54 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                 
                 // WebView 需要避开 (状态栏 + 地址栏) 的高度
                 // 因为移除了 layout_behavior，WebView 默认在顶部，会被 AppBar 遮挡
-                binding.webView.setPadding(0, topPadding + actionBarHeight, 0, 0)
+                // 注意：这里我们设置的是 Container 的 Padding
+                binding.webViewContainer.setPadding(0, topPadding + actionBarHeight, 0, 0)
             } else {
                 // 地址栏隐藏：AppBar Padding 归零
                 binding.appBarLayout.setPadding(0, 0, 0, 0)
                 
                 // WebView 顶部 Padding 归零，让内容延伸到状态栏区域
                 // 解决"隐藏后白条"问题
-                binding.webView.setPadding(0, 0, 0, 0)
+                binding.webViewContainer.setPadding(0, 0, 0, 0)
             }
 
             WindowInsetsCompat.CONSUMED
         }
     }
+
+    private fun createNewTab(url: String? = null) {
+        val webView = WebView(this)
+        setupWebView(webView)
+        
+        val tab = Tab(webView = webView)
+        
+        // 确定初始URL
+        val initialUrl = if (url != null) {
+            url
+        } else {
+            val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+            // 检查是否需要恢复上次浏览的页面 (仅在第一个标签页且没有指定URL时)
+            if (TabManager.tabs.isEmpty() && prefs.getBoolean("restore_last_page", false)) {
+                val lastUrl = prefs.getString("last_url", null)
+                if (!lastUrl.isNullOrEmpty()) {
+                    lastUrl
+                } else {
+                    prefs.getString("home_page", "https://www.google.com") ?: "https://www.google.com"
+                }
+            } else {
+                prefs.getString("home_page", "https://www.google.com") ?: "https://www.google.com"
+            }
+        }
+
+        tab.url = initialUrl
+        webView.loadUrl(initialUrl)
+        
+        TabManager.addTab(tab)
+    }
     
     @SuppressLint("SetJavaScriptEnabled", "AddJavascriptInterface")
-    private fun setupWebView() {
-        binding.webView.apply {
+    private fun setupWebView(webView: WebView) {
+        webView.apply {
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
@@ -274,32 +331,59 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                 mediaPlaybackRequiresUserGesture = false // 允许后台播放音频
             }
             
-            addJavascriptInterface(WebAppInterface(this@MainActivity), "Android")
+            addJavascriptInterface(WebAppInterface(this@MainActivity, webView), "Android")
             
             webViewClient = object : WebViewClient() {
                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                     super.onPageStarted(view, url, favicon)
-                    binding.progressBar.visibility = View.VISIBLE
-                    binding.progressBar.progress = 0
-                    binding.etUrl.setText(url)
+                    
+                    // 页面开始加载，意味着上一页的 JS 环境已销毁
+                    // 如果该 WebView 之前持有锁，现在必须释放
+                    if (view != null && wakeLockHolders.contains(view)) {
+                        wakeLockHolders.remove(view)
+                        checkAndScheduleStop()
+                    }
+
+                    // 仅当是当前标签页时更新进度条
+                    if (TabManager.currentTab.value?.webView == view) {
+                        binding.progressBar.visibility = View.VISIBLE
+                        binding.progressBar.progress = 0
+                        binding.etUrl.setText(url)
+                    }
                     injectNotificationPolyfill(view)
                     injectKeepAlivePolyfill(view)
+                    
+                    // 更新 Tab 信息
+                    val tab = TabManager.tabs.find { it.webView == view }
+                    tab?.url = url ?: ""
+                    tab?.updateActivity()
                 }
                 
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
-                    binding.progressBar.visibility = View.GONE
-                    binding.etUrl.setText(url)
+                    if (TabManager.currentTab.value?.webView == view) {
+                        binding.progressBar.visibility = View.GONE
+                        binding.etUrl.setText(url)
+                    }
                     injectNotificationPolyfill(view)
                     injectKeepAlivePolyfill(view)
                     
-                    // 保存当前 URL
-                    if (url != null && url.startsWith("http")) {
+                    // 更新 Tab 信息
+                    val tab = TabManager.tabs.find { it.webView == view }
+                    tab?.url = url ?: ""
+                    tab?.title = view?.title ?: ""
+                    tab?.updateActivity()
+                    
+                    // 保存当前 URL (仅保存当前标签页的)
+                    if (TabManager.currentTab.value?.webView == view && url != null && url.startsWith("http")) {
                         sharedPreferences.edit().putString("last_url", url).apply()
                     }
                 }
                 
                 override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                    // 每次加载新URL都更新活跃状态
+                    val tab = TabManager.tabs.find { it.webView == view }
+                    tab?.updateActivity()
                     return false
                 }
             }
@@ -307,15 +391,25 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             webChromeClient = object : WebChromeClient() {
                 override fun onProgressChanged(view: WebView?, newProgress: Int) {
                     super.onProgressChanged(view, newProgress)
-                    binding.progressBar.progress = newProgress
-                    if (newProgress == 100) {
-                        binding.progressBar.visibility = View.GONE
+                    if (TabManager.currentTab.value?.webView == view) {
+                        binding.progressBar.progress = newProgress
+                        if (newProgress == 100) {
+                            binding.progressBar.visibility = View.GONE
+                        }
                     }
                 }
                 
                 override fun onReceivedTitle(view: WebView?, title: String?) {
                     super.onReceivedTitle(view, title)
-                    // 可以在这里更新标题
+                    val tab = TabManager.tabs.find { it.webView == view }
+                    tab?.title = title ?: ""
+                    tab?.updateActivity()
+                }
+                
+                override fun onReceivedIcon(view: WebView?, icon: Bitmap?) {
+                    super.onReceivedIcon(view, icon)
+                    val tab = TabManager.tabs.find { it.webView == view }
+                    tab?.favicon = icon
                 }
 
                 override fun onShowFileChooser(
@@ -338,28 +432,92 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                 }
             }
             
+            // 添加触摸监听以更新活跃状态
+            setOnTouchListener { _, event ->
+                if (event.action == MotionEvent.ACTION_DOWN) {
+                    val tab = TabManager.tabs.find { it.webView == this }
+                    tab?.updateActivity()
+                }
+                false
+            }
+        }
+        
+        // 应用当前设置
+        applySettingsToWebView(webView)
+    }
+
+    private fun applySettingsToWebView(webView: WebView) {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        webView.settings.javaScriptEnabled = prefs.getBoolean("javascript", true)
+        
+        // Apply User Agent
+        val userAgentType = prefs.getString("user_agent", "default") ?: "default"
+        val userAgent = when (userAgentType) {
+            "chrome_android" -> "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+            "chrome_desktop" -> "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "firefox_android" -> "Mozilla/5.0 (Android 13; Mobile; rv:120.0) Gecko/120.0 Firefox/120.0"
+            "safari_ios" -> "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+            "safari_mac" -> "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+            "custom" -> prefs.getString("custom_user_agent", "") ?: ""
+            else -> null
+        }
+        if (userAgent != null && userAgent.isNotEmpty()) {
+            webView.settings.userAgentString = userAgent
+        }
+        if (prefs.getBoolean("desktop_mode", false)) {
+            webView.settings.userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            webView.settings.useWideViewPort = true
+            webView.settings.loadWithOverviewMode = true
+        }
+
+        // Dark Mode
+        val isDarkMode = prefs.getBoolean("dark_mode", false)
+        if (isDarkMode) {
+             @Suppress("DEPRECATION")
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
+                WebSettingsCompat.setForceDark(webView.settings, WebSettingsCompat.FORCE_DARK_ON)
+            }
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
+                WebSettingsCompat.setAlgorithmicDarkeningAllowed(webView.settings, true)
+            }
+        } else {
+             @Suppress("DEPRECATION")
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
+                WebSettingsCompat.setForceDark(webView.settings, WebSettingsCompat.FORCE_DARK_OFF)
+            }
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
+                WebSettingsCompat.setAlgorithmicDarkeningAllowed(webView.settings, false)
+            }
         }
     }
     
     private fun setupToolbar() {
         binding.btnBack.setOnClickListener {
-            if (binding.webView.canGoBack()) {
-                binding.webView.goBack()
+            TabManager.currentTab.value?.webView?.let { webView ->
+                if (webView.canGoBack()) {
+                    webView.goBack()
+                }
             }
         }
         
         binding.btnForward.setOnClickListener {
-            if (binding.webView.canGoForward()) {
-                binding.webView.goForward()
+            TabManager.currentTab.value?.webView?.let { webView ->
+                if (webView.canGoForward()) {
+                    webView.goForward()
+                }
             }
         }
         
         binding.btnRefresh.setOnClickListener {
-            binding.webView.reload()
+            TabManager.currentTab.value?.webView?.reload()
         }
         
         binding.btnMenu.setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
+        }
+
+        binding.btnTabs.setOnClickListener {
+            showTabSwitcher()
         }
 
         binding.btnHideAddressBar.setOnClickListener {
@@ -548,7 +706,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             }
         }
         
-        binding.webView.loadUrl(finalUrl)
+        TabManager.currentTab.value?.webView?.loadUrl(finalUrl)
     }
     
     private fun showBookmarkPopup(anchorView: View) {
@@ -613,8 +771,9 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         val etUrl = dialogView.findViewById<TextInputEditText>(R.id.etBookmarkUrl)
 
         // 预填充当前网页信息
-        etName.setText(binding.webView.title)
-        etUrl.setText(binding.webView.url)
+        val currentTab = TabManager.currentTab.value
+        etName.setText(currentTab?.title ?: "")
+        etUrl.setText(currentTab?.url ?: "")
 
         MaterialAlertDialogBuilder(this)
             .setTitle("添加书签")
@@ -657,29 +816,16 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
     }
 
     private fun loadHomePage() {
-        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        
-        // 检查是否需要恢复上次浏览的页面
-        if (prefs.getBoolean("restore_last_page", false)) {
-            val lastUrl = prefs.getString("last_url", null)
-            if (!lastUrl.isNullOrEmpty()) {
-                binding.webView.loadUrl(lastUrl)
-                return
-            }
-        }
-        
-        val homePage = prefs.getString("home_page", "https://www.google.com") ?: "https://www.google.com"
-        binding.webView.loadUrl(homePage)
+        // 此方法现在主要用于在没有标签页时创建初始标签页，逻辑已移至 createNewTab
     }
     
     private fun applySettings() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         
-        // 应用JavaScript设置
-        binding.webView.settings.javaScriptEnabled = prefs.getBoolean("javascript", true)
-        
-        // 应用User Agent设置
-        applyUserAgent()
+        // 对所有标签页应用设置
+        TabManager.tabs.forEach { tab ->
+            applySettingsToWebView(tab.webView)
+        }
         
         // 应用地址栏隐藏设置
         if (prefs.getBoolean("hide_address_bar", false)) {
@@ -699,65 +845,59 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         val position = prefs.getString("toolbar_position", "top")
         applyToolbarPosition(position)
 
-        // 应用深色模式设置
+        // 应用深色模式设置 (UI部分)
         val isDarkMode = prefs.getBoolean("dark_mode", false)
         if (isDarkMode) {
             AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
-            @Suppress("DEPRECATION")
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
-                WebSettingsCompat.setForceDark(binding.webView.settings, WebSettingsCompat.FORCE_DARK_ON)
-            }
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
-                WebSettingsCompat.setAlgorithmicDarkeningAllowed(binding.webView.settings, true)
-            }
         } else {
             AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO)
-            @Suppress("DEPRECATION")
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
-                WebSettingsCompat.setForceDark(binding.webView.settings, WebSettingsCompat.FORCE_DARK_OFF)
-            }
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
-                WebSettingsCompat.setAlgorithmicDarkeningAllowed(binding.webView.settings, false)
-            }
         }
     }
     
-    private fun enableKeepAlive() {
-        if (isKeepAliveActive) return
-        isKeepAliveActive = true
-        
+    private fun ensureKeepAliveService() {
         // 取消停止服务的倒计时
         keepAliveHandler.removeCallbacks(stopKeepAliveRunnable)
-
-        try {
-            // 启动前台服务
-            val intent = Intent(this, KeepAliveService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(intent)
-            } else {
-                startService(intent)
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            // Toast.makeText(this, "启动保活服务失败: ${e.message}", Toast.LENGTH_SHORT).show()
-        }
         
-        // 请求忽略电池优化
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val powerManager = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
-            if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
-                try {
-                    val intentBattery = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-                    intentBattery.data = Uri.parse("package:$packageName")
-                    startActivity(intentBattery)
-                } catch (e: Exception) {
-                    e.printStackTrace()
+        if (!isKeepAliveActive) {
+            isKeepAliveActive = true
+            try {
+                // 启动前台服务
+                val intent = Intent(this, KeepAliveService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(intent)
+                } else {
+                    startService(intent)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+            
+            // 请求忽略电池优化
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
+                    try {
+                        val intentBattery = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                        intentBattery.data = Uri.parse("package:$packageName")
+                        startActivity(intentBattery)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
                 }
             }
         }
     }
 
-    private fun disableKeepAlive() {
+    private fun checkAndScheduleStop() {
+        if (wakeLockHolders.isEmpty()) {
+            keepAliveHandler.removeCallbacks(stopKeepAliveRunnable)
+            keepAliveHandler.postDelayed(stopKeepAliveRunnable, 2 * 60 * 1000L)
+        }
+    }
+
+    private fun stopKeepAliveService() {
+        if (wakeLockHolders.isNotEmpty()) return // 双重检查
+        
         isKeepAliveActive = false
         val intent = Intent(this, KeepAliveService::class.java)
         stopService(intent)
@@ -909,7 +1049,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         }
     }
 
-    inner class WebAppInterface(private val mContext: Context) {
+    inner class WebAppInterface(private val mContext: Context, private val webView: WebView) {
         @JavascriptInterface
         fun showNotification(title: String, body: String) {
             val builder = NotificationCompat.Builder(mContext, "WebNotificationChannel")
@@ -926,44 +1066,29 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         @JavascriptInterface
         fun acquireWakeLock() {
             runOnUiThread {
-                enableKeepAlive()
+                // 更新对应标签页的活跃时间
+                val tab = TabManager.tabs.find { it.webView == webView }
+                tab?.updateActivity()
+                
+                // 添加到持有者集合并确保服务运行
+                wakeLockHolders.add(webView)
+                ensureKeepAliveService()
             }
         }
 
         @JavascriptInterface
         fun releaseWakeLock() {
             runOnUiThread {
-                // 延迟 2 分钟释放锁
-                keepAliveHandler.removeCallbacks(stopKeepAliveRunnable)
-                keepAliveHandler.postDelayed(stopKeepAliveRunnable, 2 * 60 * 1000L)
+                // 从持有者集合移除
+                wakeLockHolders.remove(webView)
+                // 检查是否需要停止服务
+                checkAndScheduleStop()
             }
         }
     }
 
     private fun applyUserAgent() {
-        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        val userAgentType = prefs.getString("user_agent", "default") ?: "default"
-        
-        val userAgent = when (userAgentType) {
-            "chrome_android" -> "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-            "chrome_desktop" -> "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            "firefox_android" -> "Mozilla/5.0 (Android 13; Mobile; rv:120.0) Gecko/120.0 Firefox/120.0"
-            "safari_ios" -> "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-            "safari_mac" -> "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
-            "custom" -> prefs.getString("custom_user_agent", "") ?: ""
-            else -> null
-        }
-        
-        if (userAgent != null && userAgent.isNotEmpty()) {
-            binding.webView.settings.userAgentString = userAgent
-        }
-        
-        // 桌面模式
-        if (prefs.getBoolean("desktop_mode", false)) {
-            binding.webView.settings.userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            binding.webView.settings.useWideViewPort = true
-            binding.webView.settings.loadWithOverviewMode = true
-        }
+        // 逻辑已移至 applySettingsToWebView
     }
     
     private fun hideStatusBar() {
@@ -1021,27 +1146,22 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
     
     override fun onResume() {
         super.onResume()
-        binding.webView.onResume()
+        TabManager.currentTab.value?.webView?.onResume()
         applySettings()
     }
 
     override fun onPause() {
-        // 如果正在保活（有活跃任务），则不暂停 WebView
-        if (!isKeepAliveActive) {
-            // 如果没有活跃任务，但我们仍在 2 分钟的 grace period 内，
-            // 理论上也应该保持 WebView 活跃以便 JS 能继续运行倒计时？
-            // 但这里是 Native 的倒计时。
-            // 为了安全起见，只要启用了保活机制（默认启用），我们就不暂停 WebView，
-            // 让系统通过 OOM Killer 或 Service 优先级来管理。
-            // binding.webView.onPause()
-        }
+        // 保活逻辑现在由 TabManager 处理，这里只暂停当前标签页的前台状态
         super.onPause()
     }
     
     override fun onDestroy() {
         super.onDestroy()
         sharedPreferences.unregisterOnSharedPreferenceChangeListener(this)
-        binding.webView.destroy()
+        // WebView 的销毁由 TabManager 管理，但在 Activity 销毁时应该清空
+        TabManager.tabs.forEach { 
+            it.webView.destroy() 
+        }
     }
     
     override fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences?, key: String?) {
@@ -1065,17 +1185,76 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                 applyToolbarPosition(position)
             }
             "user_agent", "custom_user_agent", "desktop_mode" -> {
-                applyUserAgent()
-                binding.webView.reload()
+                applySettings()
+                TabManager.tabs.forEach { it.webView.reload() }
             }
             "javascript" -> {
-                binding.webView.settings.javaScriptEnabled =
-                    sharedPreferences?.getBoolean("javascript", true) ?: true
-                binding.webView.reload()
+                applySettings()
+                TabManager.tabs.forEach { it.webView.reload() }
             }
             "dark_mode" -> {
                 applySettings()
             }
         }
+    }
+
+    private fun showTabSwitcher() {
+        if (tabSwitcherDialog?.isShowing == true) return
+
+        val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
+        dialog.setContentView(R.layout.dialog_tab_switcher)
+        
+        val rvTabs = dialog.findViewById<RecyclerView>(R.id.rvTabs)
+        val btnClose = dialog.findViewById<View>(R.id.btnCloseSwitcher)
+        val fabNewTab = dialog.findViewById<FloatingActionButton>(R.id.fabNewTab)
+        
+        rvTabs.layoutManager = GridLayoutManager(this, 2)
+        
+        val adapter = TabAdapter(
+            TabManager.tabs,
+            onTabSelected = { tab ->
+                TabManager.switchToTab(tab)
+                dialog.dismiss()
+            },
+            onTabClosed = { tab ->
+                TabManager.closeTab(tab)
+            }
+        )
+        rvTabs.adapter = adapter
+        
+        // 观察标签页列表变化以更新列表
+        TabManager.tabsListChange.observe(this) {
+            // 检查是否有已关闭的标签页仍持有锁
+            val activeWebViews = TabManager.tabs.map { it.webView }.toSet()
+            val toRemove = wakeLockHolders.filter { !activeWebViews.contains(it) }
+            
+            if (toRemove.isNotEmpty()) {
+                wakeLockHolders.removeAll(toRemove)
+                checkAndScheduleStop()
+            }
+
+            adapter.updateData(TabManager.tabs)
+            if (TabManager.tabs.isEmpty()) {
+                // 如果所有标签页都关闭了，自动创建一个新标签页
+                createNewTab()
+                dialog.dismiss()
+            }
+        }
+        
+        btnClose.setOnClickListener {
+            dialog.dismiss()
+        }
+        
+        fabNewTab.setOnClickListener {
+            createNewTab()
+            dialog.dismiss()
+        }
+        
+        dialog.setOnDismissListener {
+            tabSwitcherDialog = null
+        }
+        
+        dialog.show()
+        tabSwitcherDialog = dialog
     }
 }
