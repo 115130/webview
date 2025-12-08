@@ -25,7 +25,7 @@ object TabManager {
 
     private val keepAliveHandler = Handler(Looper.getMainLooper())
     private const val KEEP_ALIVE_CHECK_INTERVAL = 10000L // 每10秒检查一次
-    private const val INACTIVITY_THRESHOLD = 60000L // 1分钟无活动阈值
+    private const val INACTIVITY_THRESHOLD = 30000L // 30秒无活动阈值
 
     private val keepAliveRunnable = object : Runnable {
         override fun run() {

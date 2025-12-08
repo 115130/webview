@@ -35,20 +35,20 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.coordinatorlayout.widget.CoordinatorLayout
-import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import androidx.preference.PreferenceManager
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
-import com.google.android.material.appbar.AppBarLayout
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import com.google.android.material.textfield.TextInputEditText
@@ -74,10 +74,32 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
     private var isKeepAliveActive = false
     private val wakeLockHolders = mutableSetOf<WebView>()
 
-    // 屏幕熄灭超时释放锁相关
-    private val screenOffHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    private val forceReleaseLocksRunnable = Runnable { forceReleaseAllLocks() }
+    // 休眠状态与计时
+    private val sleepHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val appBackgroundSleepRunnable = Runnable { handleAppBackgroundSleepTimeout() }
+    private val screenOffSleepRunnable = Runnable { handleScreenOffSleepTimeout() }
+    private var isAppInBackground = false
+    private var isAppBackgroundSleeping = false
+    private var isScreenOff = false
+    private var isScreenOffSleeping = false
+    private var isAppBackgroundCountdownActive = false
+    private var isScreenOffCountdownActive = false
+    private var userLeftApp = false
+    private val appBackgroundSleepTimeout = 5 * 60 * 1000L // 5分钟后台休眠倒计时
     private lateinit var screenStateReceiver: BroadcastReceiver
+    private val processLifecycleObserver = object : DefaultLifecycleObserver {
+        override fun onStart(owner: LifecycleOwner) {
+            isAppInBackground = false
+            userLeftApp = false
+            exitAppBackgroundSleep()
+            cancelAppBackgroundSleepCountdown()
+        }
+
+        override fun onStop(owner: LifecycleOwner) {
+            isAppInBackground = true
+            startAppBackgroundSleepCountdownIfIdle()
+        }
+    }
 
     // 返回键防误触相关
     private var backPressCount = 0
@@ -140,6 +162,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         
         sharedPreferences = PreferenceManager.getDefaultSharedPreferences(this)
         sharedPreferences.registerOnSharedPreferenceChangeListener(this)
+        ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleObserver)
         
         setupToolbar()
         createNotificationChannel()
@@ -874,9 +897,114 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         }
     }
     
+    private fun hasActiveTasks(): Boolean {
+        return wakeLockHolders.isNotEmpty()
+    }
+
+    private fun onNewActiveTaskDetected() {
+        if (isAppBackgroundCountdownActive) {
+            cancelAppBackgroundSleepCountdown(logRenewal = true)
+        }
+    }
+
+    private fun startAppBackgroundSleepCountdownIfIdle() {
+        if (!isAppInBackground || isAppBackgroundSleeping || isScreenOffSleeping || hasActiveTasks()) {
+            cancelAppBackgroundSleepCountdown()
+            return
+        }
+        if (isScreenOff && !userLeftApp) {
+            cancelAppBackgroundSleepCountdown()
+            return
+        }
+        isAppBackgroundCountdownActive = true
+        sleepHandler.removeCallbacks(appBackgroundSleepRunnable)
+        sleepHandler.postDelayed(appBackgroundSleepRunnable, appBackgroundSleepTimeout)
+    }
+
+    private fun cancelAppBackgroundSleepCountdown(logRenewal: Boolean = false) {
+        if (isAppBackgroundCountdownActive) {
+            sleepHandler.removeCallbacks(appBackgroundSleepRunnable)
+            isAppBackgroundCountdownActive = false
+            if (logRenewal) {
+                LogManager.log(this, "任务续期：检测到后台任务，应用后台休眠倒计时已重置")
+            }
+        }
+    }
+
+    private fun handleAppBackgroundSleepTimeout() {
+        isAppBackgroundCountdownActive = false
+        if (isAppInBackground && !hasActiveTasks()) {
+            enterAppBackgroundSleep()
+        }
+    }
+
+    private fun enterAppBackgroundSleep() {
+        if (isAppBackgroundSleeping) return
+        isAppBackgroundSleeping = true
+        cancelAppBackgroundSleepCountdown()
+        cancelScreenOffSleepCountdown()
+        forceReleaseLocks("进入后台休眠，已释放所有唤醒锁")
+    }
+
+    private fun exitAppBackgroundSleep() {
+        if (!isAppBackgroundSleeping) return
+        isAppBackgroundSleeping = false
+        LogManager.log(this, "应用回到前台，退出后台休眠")
+    }
+
+    private fun startScreenOffSleepCountdownIfIdle() {
+        if (!isScreenOff || isScreenOffSleeping || isAppBackgroundSleeping) return
+
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val timeoutMinutes = prefs.getString("screen_off_timeout", "30")?.toLongOrNull() ?: 30L
+        sleepHandler.removeCallbacks(screenOffSleepRunnable)
+        isScreenOffCountdownActive = false
+
+        if (timeoutMinutes <= 0L) {
+            return
+        }
+
+        isScreenOffCountdownActive = true
+        sleepHandler.postDelayed(screenOffSleepRunnable, timeoutMinutes * 60 * 1000L)
+    }
+
+    private fun cancelScreenOffSleepCountdown(logRenewal: Boolean = false) {
+        if (isScreenOffCountdownActive) {
+            sleepHandler.removeCallbacks(screenOffSleepRunnable)
+            isScreenOffCountdownActive = false
+            if (logRenewal) {
+                LogManager.log(this, "任务续期：检测到活跃任务，熄屏休眠倒计时已重置")
+            }
+        }
+    }
+
+    private fun handleScreenOffSleepTimeout() {
+        isScreenOffCountdownActive = false
+        if (isScreenOff) {
+            enterScreenOffSleep()
+        }
+    }
+
+    private fun enterScreenOffSleep() {
+        if (isScreenOffSleeping) return
+        isScreenOffSleeping = true
+        cancelScreenOffSleepCountdown()
+        forceReleaseLocks("屏幕长时间熄灭，强制释放唤醒锁")
+    }
+
+    private fun exitScreenOffSleep() {
+        if (!isScreenOffSleeping) return
+        isScreenOffSleeping = false
+        LogManager.log(this, "屏幕点亮，退出熄屏休眠")
+    }
+    
     private fun ensureKeepAliveService() {
         // 取消停止服务的倒计时
         keepAliveHandler.removeCallbacks(stopKeepAliveRunnable)
+
+        if (isAppBackgroundSleeping || isScreenOffSleeping) {
+            return
+        }
         
         if (!isKeepAliveActive) {
             isKeepAliveActive = true
@@ -928,22 +1056,13 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             override fun onReceive(context: Context, intent: Intent) {
                 when (intent.action) {
                     Intent.ACTION_SCREEN_OFF -> {
-                        // 屏幕熄灭，读取配置并开始倒计时
-                        val prefs = PreferenceManager.getDefaultSharedPreferences(context)
-                        val timeoutStr = prefs.getString("screen_off_timeout", "30") ?: "30"
-                        val timeoutMinutes = timeoutStr.toLongOrNull() ?: 30L
-
-                        if (timeoutMinutes > 0) {
-                            android.util.Log.d("ScreenState", "Screen Off: Scheduling force release in $timeoutMinutes mins")
-                            screenOffHandler.postDelayed(forceReleaseLocksRunnable, timeoutMinutes * 60 * 1000L)
-                        } else {
-                            android.util.Log.d("ScreenState", "Screen Off: Force release disabled (timeout <= 0)")
-                        }
+                        isScreenOff = true
+                        startScreenOffSleepCountdownIfIdle()
                     }
                     Intent.ACTION_SCREEN_ON -> {
-                        // 屏幕点亮，取消倒计时
-                        android.util.Log.d("ScreenState", "Screen On: Cancelling force release")
-                        screenOffHandler.removeCallbacks(forceReleaseLocksRunnable)
+                        isScreenOff = false
+                        cancelScreenOffSleepCountdown()
+                        exitScreenOffSleep()
                     }
                 }
             }
@@ -955,25 +1074,17 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         registerReceiver(screenStateReceiver, filter)
     }
 
-    private fun forceReleaseAllLocks() {
-        if (wakeLockHolders.isNotEmpty()) {
-            android.util.Log.d("ScreenState", "Force releasing all locks due to screen off timeout")
-            LogManager.log(this, "Force releasing all locks due to screen off timeout")
-            
-            // 1. 清空持有者集合
-            wakeLockHolders.clear()
-            
-            // 2. 重置所有 Tab 的保活状态
-            TabManager.tabs.forEach {
-                it.isKeepAliveActive = false
-            }
-            
-            // 3. 强制停止服务
-            stopKeepAliveService()
-            
-            // 4. 可选：通知用户或记录日志
-            Toast.makeText(this, "已自动停止后台任务以节省电量", Toast.LENGTH_SHORT).show()
+    private fun forceReleaseLocks(reason: String) {
+        wakeLockHolders.clear()
+        TabManager.tabs.forEach {
+            it.isKeepAliveActive = false
+            it.lastActiveTime = System.currentTimeMillis()
         }
+
+        keepAliveHandler.removeCallbacks(stopKeepAliveRunnable)
+        isKeepAliveActive = false
+        stopKeepAliveService()
+        LogManager.log(this, reason)
     }
 
     private fun injectKeepAlivePolyfill(view: WebView?) {
@@ -1139,15 +1250,22 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         @JavascriptInterface
         fun acquireWakeLock() {
             runOnUiThread {
-                // 更新对应标签页的活跃时间
                 val tab = TabManager.tabs.find { it.webView == webView }
+                
+                // 应用或熄屏休眠期间拒绝新的锁请求，等待用户回到前台/点亮屏幕
+                if (isAppBackgroundSleeping || isScreenOffSleeping) {
+                    tab?.isKeepAliveActive = false
+                    return@runOnUiThread
+                }
+
+                // 更新对应标签页的活跃时间
                 tab?.updateActivity()
                 tab?.isKeepAliveActive = true // 标记为正在保活
+
+                onNewActiveTaskDetected()
                 
                 // 添加到持有者集合并确保服务运行
-                if (wakeLockHolders.add(webView)) {
-                    LogManager.log(mContext, "Acquired WakeLock for tab: ${tab?.title ?: "Unknown"}")
-                }
+                wakeLockHolders.add(webView)
                 ensureKeepAliveService()
             }
         }
@@ -1158,13 +1276,19 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                 // 更新对应标签页状态
                 val tab = TabManager.tabs.find { it.webView == webView }
                 tab?.isKeepAliveActive = false // 标记为不再保活
+                tab?.lastActiveTime = System.currentTimeMillis()
 
                 // 从持有者集合移除
-                if (wakeLockHolders.remove(webView)) {
-                    LogManager.log(mContext, "Released WakeLock for tab: ${tab?.title ?: "Unknown"}")
-                }
+                wakeLockHolders.remove(webView)
                 // 检查是否需要停止服务
                 checkAndScheduleStop()
+
+                if (isAppInBackground && !isAppBackgroundSleeping) {
+                    startAppBackgroundSleepCountdownIfIdle()
+                }
+                if (isScreenOff && !isScreenOffSleeping) {
+                    startScreenOffSleepCountdownIfIdle()
+                }
             }
         }
     }
@@ -1236,12 +1360,24 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         // 保活逻辑现在由 TabManager 处理，这里只暂停当前标签页的前台状态
         super.onPause()
     }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        userLeftApp = true
+    }
     
     override fun onDestroy() {
         super.onDestroy()
         sharedPreferences.unregisterOnSharedPreferenceChangeListener(this)
-        unregisterReceiver(screenStateReceiver)
-        screenOffHandler.removeCallbacks(forceReleaseLocksRunnable)
+        ProcessLifecycleOwner.get().lifecycle.removeObserver(processLifecycleObserver)
+        try {
+            unregisterReceiver(screenStateReceiver)
+        } catch (e: Exception) {
+            // Receiver might already be unregistered
+        }
+        sleepHandler.removeCallbacks(appBackgroundSleepRunnable)
+        sleepHandler.removeCallbacks(screenOffSleepRunnable)
+        keepAliveHandler.removeCallbacks(stopKeepAliveRunnable)
         
         // WebView 的销毁由 TabManager 管理，但在 Activity 销毁时应该清空
         TabManager.tabs.forEach {
@@ -1279,6 +1415,13 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             }
             "dark_mode" -> {
                 applySettings()
+            }
+            "screen_off_timeout" -> {
+                // 重新应用熄屏休眠计时策略
+                if (isScreenOff) {
+                    cancelScreenOffSleepCountdown()
+                    startScreenOffSleepCountdownIfIdle()
+                }
             }
         }
     }
