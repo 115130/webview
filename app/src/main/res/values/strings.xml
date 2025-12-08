@@ -83,6 +83,13 @@
     <string name="pref_enable_wakelock_log_summary">记录唤醒锁的获取和释放操作（用于调试）</string>
     <string name="pref_view_logs">查看日志</string>
     <string name="pref_view_logs_summary">查看唤醒锁操作日志</string>
+    
+    <string name="log_viewer_title">唤醒锁日志</string>
+    <string name="clear_logs">清空日志</string>
+    <string name="clear_logs_confirmation">确定要清空所有唤醒锁日志吗？</string>
+    <string name="clear">清空</string>
+    <string name="cancel">取消</string>
+    <string name="no_logs_found">暂无日志记录。</string>
 
     <string-array name="screen_off_timeout_entries">
         <item>5 分钟</item>

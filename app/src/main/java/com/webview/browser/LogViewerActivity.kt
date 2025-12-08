@@ -2,36 +2,61 @@ package com.webview.browser
 
 import android.os.Bundle
 import android.view.MenuItem
-import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import com.google.android.material.appbar.MaterialToolbar
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.webview.browser.databinding.ActivityLogViewerBinding
 
 class LogViewerActivity : AppCompatActivity() {
 
+    private lateinit var binding: ActivityLogViewerBinding
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_log_viewer)
-
-        val toolbar = findViewById<MaterialToolbar>(R.id.toolbar)
-        setSupportActionBar(toolbar)
-        supportActionBar?.setDisplayHomeAsUpEnabled(true)
-        supportActionBar?.title = "唤醒锁日志"
-
-        val tvLogs = findViewById<TextView>(R.id.tvLogs)
         
+        // 启用 Edge-to-Edge
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        
+        binding = ActivityLogViewerBinding.inflate(layoutInflater)
+        setContentView(binding.root)
+
+        // Edge-to-Edge 适配
+        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { v, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
+            insets
+        }
+
+        // 设置状态栏颜色
+        window.statusBarColor = getColor(R.color.primary_dark)
+
+        setSupportActionBar(binding.toolbar)
+        supportActionBar?.setDisplayHomeAsUpEnabled(true)
+        supportActionBar?.setTitle(R.string.log_viewer_title)
+
         // Load logs
-        tvLogs.text = LogManager.getLogs(this)
+        loadLogs()
 
         // Clear logs button
-        toolbar.setOnMenuItemClickListener { item ->
+        binding.toolbar.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 R.id.action_clear_logs -> {
-                    showClearLogsDialog(tvLogs)
+                    showClearLogsDialog()
                     true
                 }
                 else -> false
             }
+        }
+    }
+
+    private fun loadLogs() {
+        val logs = LogManager.getLogs(this)
+        if (logs == "No logs found.") {
+             binding.tvLogs.text = getString(R.string.no_logs_found)
+        } else {
+             binding.tvLogs.text = logs
         }
     }
 
@@ -48,15 +73,15 @@ class LogViewerActivity : AppCompatActivity() {
         return super.onOptionsItemSelected(item)
     }
 
-    private fun showClearLogsDialog(tvLogs: TextView) {
+    private fun showClearLogsDialog() {
         MaterialAlertDialogBuilder(this)
-            .setTitle("清空日志")
-            .setMessage("确定要清空所有唤醒锁日志吗？")
-            .setPositiveButton("清空") { _, _ ->
+            .setTitle(R.string.clear_logs)
+            .setMessage(R.string.clear_logs_confirmation)
+            .setPositiveButton(R.string.clear) { _, _ ->
                 LogManager.clearLogs(this)
-                tvLogs.text = "No logs found."
+                binding.tvLogs.text = getString(R.string.no_logs_found)
             }
-            .setNegativeButton("取消", null)
+            .setNegativeButton(R.string.cancel, null)
             .show()
     }
 }

@@ -45,6 +45,12 @@
             android:parentActivityName=".SettingsActivity" />
 
         <activity
+            android:name=".LogViewerActivity"
+            android:exported="false"
+            android:label="@string/pref_view_logs"
+            android:parentActivityName=".SettingsActivity" />
+
+        <activity
             android:name=".CameraActivity"
             android:exported="false"
             android:screenOrientation="portrait"
