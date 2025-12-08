@@ -262,3 +262,79 @@ graph TD
     
     style D fill:#f9f,stroke:#333,stroke-width:2px
 ```
+
+## 8. 新增功能实现细节 (v1.4)
+
+### 8.1 多标签页状态持久化
+
+为了实现"应用关闭后下次启动还能访问这些页面"的需求，v1.4 引入了多标签页状态持久化机制。
+
+*   **功能描述**：
+    *   当用户添加、关闭、切换标签页，或者网页加载完成、标题更新时，应用会自动保存当前所有标签页的状态。
+    *   应用重启时，会自动恢复之前打开的所有标签页（URL 和 Title），并切换到上次选中的标签页。
+    *   **注意**：仅恢复 URL 和 Title，不恢复网页内部的滚动位置、表单输入等临时状态。
+
+*   **实现原理**：
+    *   **数据存储**：使用 `SharedPreferences` 存储一个 JSON 数组 (`tabs_list`)，其中包含每个标签页的 ID、URL 和 Title。同时存储当前选中标签页的 ID (`current_tab_id`)。
+    *   **保存时机 (`TabManager.saveTabs`)**：
+        *   `TabManager`: `addTab`, `closeTab`, `switchToTab`。
+        *   `MainActivity`: `onPageFinished` (页面加载完成), `onReceivedTitle` (标题更新)。
+    *   **恢复时机 (`TabManager.restoreTabs`)**：
+        *   `MainActivity.onCreate`: 在初始化标签页之前尝试恢复。如果恢复成功，则跳过创建默认新标签页的步骤。
+
+### 8.2 接口与字段详解
+
+#### 8.2.1 TabManager.kt
+
+负责管理所有标签页的生命周期、状态保存与恢复。
+
+*   **`saveTabs(context: Context)`**
+    *   **作用**：将当前标签页列表持久化到本地存储。
+    *   **参数**：`context` - 用于获取 `SharedPreferences`。
+    *   **存储格式**：
+        *   `tabs_list`: JSON 数组字符串，包含每个标签页的 `id`, `url`, `title`。
+        *   `current_tab_id`: 当前选中标签页的 ID。
+
+*   **`restoreTabs(context: Context, webViewFactory: (Context) -> WebView): Boolean`**
+    *   **作用**：从本地存储恢复标签页列表。
+    *   **参数**：
+        *   `context`: 上下文。
+        *   `webViewFactory`: 一个高阶函数，用于创建新的 `WebView` 实例（因为 `WebView` 创建需要 `Context` 且需要配置）。
+    *   **返回值**：`true` 表示恢复成功（至少恢复了一个标签页），`false` 表示无数据或恢复失败。
+
+#### 8.2.2 Tab.kt
+
+标签页的数据模型。
+
+*   **字段说明**：
+    *   `id: String`: 唯一标识符 (UUID)。
+    *   `webView: WebView`: 持有的 WebView 实例。
+    *   `title: String`: 网页标题。
+    *   `url: String`: 当前 URL。
+    *   `favicon: Bitmap?`: 网页图标。
+    *   `lastActiveTime: Long`: 最后一次活跃时间戳，用于判断是否需要休眠。
+    *   `isBackgroundPaused: Boolean`: 标记该标签页是否已被后台策略暂停（调用了 `onPause`）。
+    *   `isKeepAliveActive: Boolean` (v1.4新增): 标记该标签页是否正在执行保活任务（如播放音频、WebSocket 连接等）。
+        *   **作用**：当此字段为 `true` 时，即使 `lastActiveTime` 超时，`TabManager` 也不会强制休眠该标签页，防止音频中断或连接断开。
+
+#### 8.2.3 MainActivity.kt (WebAppInterface)
+
+*   **`acquireWakeLock()`**
+    *   **更新**：除了申请系统 WakeLock 外，现在还会将对应 `Tab` 的 `isKeepAliveActive` 设置为 `true`。
+*   **`releaseWakeLock()`**
+    *   **更新**：释放系统 WakeLock 时，将对应 `Tab` 的 `isKeepAliveActive` 设置为 `false`。
+
+### 8.3 熄屏超时释放锁与日志功能
+
+为了进一步优化电量消耗并提供调试手段，v1.4 引入了熄屏超时释放锁和唤醒锁日志功能。
+
+*   **熄屏超时释放锁**：
+    *   **功能**：当屏幕熄灭后，如果应用在后台持有唤醒锁（例如正在播放音频），系统会启动一个倒计时（默认 30 分钟）。如果倒计时结束屏幕仍未点亮，应用将强制释放所有唤醒锁并停止后台服务。
+    *   **配置**：用户可以在设置中自定义等待时间（5分钟、15分钟、30分钟、1小时、从不）。选择"从不"将禁用此功能。
+    *   **实现**：通过 `BroadcastReceiver` 监听 `ACTION_SCREEN_OFF` 和 `ACTION_SCREEN_ON`，配合 `Handler` 实现延时任务。
+
+*   **唤醒锁日志**：
+    *   **功能**：记录唤醒锁的获取和释放操作，以及强制释放锁的事件。
+    *   **配置**：用户可以在设置中开启"启用唤醒锁日志"。
+    *   **查看**：在设置中点击"查看日志"即可查看最近的日志记录。支持一键清空日志。
+    *   **限制**：日志文件大小限制为 2MB，超过限制会自动清理旧日志。

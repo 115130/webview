@@ -6,8 +6,10 @@ import android.app.Activity
 import android.app.Dialog
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -71,6 +73,11 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
     private val stopKeepAliveRunnable = Runnable { stopKeepAliveService() }
     private var isKeepAliveActive = false
     private val wakeLockHolders = mutableSetOf<WebView>()
+
+    // 屏幕熄灭超时释放锁相关
+    private val screenOffHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val forceReleaseLocksRunnable = Runnable { forceReleaseAllLocks() }
+    private lateinit var screenStateReceiver: BroadcastReceiver
 
     // 返回键防误触相关
     private var backPressCount = 0
@@ -136,6 +143,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         
         setupToolbar()
         createNotificationChannel()
+        registerScreenStateReceiver()
 
         // 观察当前标签页变化
         TabManager.currentTab.observe(this) { tab ->
@@ -155,7 +163,16 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
 
         // 初始化标签页
         if (TabManager.tabs.isEmpty()) {
-            createNewTab()
+            // 尝试恢复标签页
+            val restored = TabManager.restoreTabs(this) { context ->
+                val webView = WebView(context)
+                setupWebView(webView)
+                webView
+            }
+            
+            if (!restored) {
+                createNewTab()
+            }
         }
 
         // 强制使用 Edge-to-Edge 布局，以便手动处理 Insets (解决键盘遮挡问题)
@@ -312,7 +329,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         tab.url = initialUrl
         webView.loadUrl(initialUrl)
         
-        TabManager.addTab(tab)
+        TabManager.addTab(tab, this)
     }
     
     @SuppressLint("SetJavaScriptEnabled", "AddJavascriptInterface")
@@ -357,6 +374,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                     val tab = TabManager.tabs.find { it.webView == view }
                     tab?.url = url ?: ""
                     tab?.updateActivity()
+                    TabManager.saveTabs(this@MainActivity)
                 }
                 
                 override fun onPageFinished(view: WebView?, url: String?) {
@@ -373,6 +391,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                     tab?.url = url ?: ""
                     tab?.title = view?.title ?: ""
                     tab?.updateActivity()
+                    TabManager.saveTabs(this@MainActivity)
                     
                     // 保存当前 URL (仅保存当前标签页的)
                     if (TabManager.currentTab.value?.webView == view && url != null && url.startsWith("http")) {
@@ -404,6 +423,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                     val tab = TabManager.tabs.find { it.webView == view }
                     tab?.title = title ?: ""
                     tab?.updateActivity()
+                    TabManager.saveTabs(this@MainActivity)
                 }
                 
                 override fun onReceivedIcon(view: WebView?, icon: Bitmap?) {
@@ -903,6 +923,59 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         stopService(intent)
     }
 
+    private fun registerScreenStateReceiver() {
+        screenStateReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                when (intent.action) {
+                    Intent.ACTION_SCREEN_OFF -> {
+                        // 屏幕熄灭，读取配置并开始倒计时
+                        val prefs = PreferenceManager.getDefaultSharedPreferences(context)
+                        val timeoutStr = prefs.getString("screen_off_timeout", "30") ?: "30"
+                        val timeoutMinutes = timeoutStr.toLongOrNull() ?: 30L
+
+                        if (timeoutMinutes > 0) {
+                            android.util.Log.d("ScreenState", "Screen Off: Scheduling force release in $timeoutMinutes mins")
+                            screenOffHandler.postDelayed(forceReleaseLocksRunnable, timeoutMinutes * 60 * 1000L)
+                        } else {
+                            android.util.Log.d("ScreenState", "Screen Off: Force release disabled (timeout <= 0)")
+                        }
+                    }
+                    Intent.ACTION_SCREEN_ON -> {
+                        // 屏幕点亮，取消倒计时
+                        android.util.Log.d("ScreenState", "Screen On: Cancelling force release")
+                        screenOffHandler.removeCallbacks(forceReleaseLocksRunnable)
+                    }
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+        }
+        registerReceiver(screenStateReceiver, filter)
+    }
+
+    private fun forceReleaseAllLocks() {
+        if (wakeLockHolders.isNotEmpty()) {
+            android.util.Log.d("ScreenState", "Force releasing all locks due to screen off timeout")
+            LogManager.log(this, "Force releasing all locks due to screen off timeout")
+            
+            // 1. 清空持有者集合
+            wakeLockHolders.clear()
+            
+            // 2. 重置所有 Tab 的保活状态
+            TabManager.tabs.forEach {
+                it.isKeepAliveActive = false
+            }
+            
+            // 3. 强制停止服务
+            stopKeepAliveService()
+            
+            // 4. 可选：通知用户或记录日志
+            Toast.makeText(this, "已自动停止后台任务以节省电量", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun injectKeepAlivePolyfill(view: WebView?) {
         val js = """
             (function() {
@@ -1069,9 +1142,12 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                 // 更新对应标签页的活跃时间
                 val tab = TabManager.tabs.find { it.webView == webView }
                 tab?.updateActivity()
+                tab?.isKeepAliveActive = true // 标记为正在保活
                 
                 // 添加到持有者集合并确保服务运行
-                wakeLockHolders.add(webView)
+                if (wakeLockHolders.add(webView)) {
+                    LogManager.log(mContext, "Acquired WakeLock for tab: ${tab?.title ?: "Unknown"}")
+                }
                 ensureKeepAliveService()
             }
         }
@@ -1079,8 +1155,14 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         @JavascriptInterface
         fun releaseWakeLock() {
             runOnUiThread {
+                // 更新对应标签页状态
+                val tab = TabManager.tabs.find { it.webView == webView }
+                tab?.isKeepAliveActive = false // 标记为不再保活
+
                 // 从持有者集合移除
-                wakeLockHolders.remove(webView)
+                if (wakeLockHolders.remove(webView)) {
+                    LogManager.log(mContext, "Released WakeLock for tab: ${tab?.title ?: "Unknown"}")
+                }
                 // 检查是否需要停止服务
                 checkAndScheduleStop()
             }
@@ -1158,9 +1240,12 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
     override fun onDestroy() {
         super.onDestroy()
         sharedPreferences.unregisterOnSharedPreferenceChangeListener(this)
+        unregisterReceiver(screenStateReceiver)
+        screenOffHandler.removeCallbacks(forceReleaseLocksRunnable)
+        
         // WebView 的销毁由 TabManager 管理，但在 Activity 销毁时应该清空
-        TabManager.tabs.forEach { 
-            it.webView.destroy() 
+        TabManager.tabs.forEach {
+            it.webView.destroy()
         }
     }
     
@@ -1213,11 +1298,11 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         val adapter = TabAdapter(
             TabManager.tabs,
             onTabSelected = { tab ->
-                TabManager.switchToTab(tab)
+                TabManager.switchToTab(tab, this)
                 dialog.dismiss()
             },
             onTabClosed = { tab ->
-                TabManager.closeTab(tab)
+                TabManager.closeTab(tab, this)
             }
         )
         rvTabs.adapter = adapter

@@ -95,6 +95,31 @@
             android:defaultValue="false"
             app:iconSpaceReserved="false" />
 
+        <ListPreference
+            android:key="screen_off_timeout"
+            android:title="@string/pref_screen_off_timeout"
+            android:summary="@string/pref_screen_off_timeout_summary"
+            android:entries="@array/screen_off_timeout_entries"
+            android:entryValues="@array/screen_off_timeout_values"
+            android:defaultValue="30"
+            app:iconSpaceReserved="false" />
+
+        <SwitchPreferenceCompat
+            android:key="enable_wakelock_log"
+            android:title="@string/pref_enable_wakelock_log"
+            android:summary="@string/pref_enable_wakelock_log_summary"
+            android:defaultValue="false"
+            app:iconSpaceReserved="false" />
+
+        <Preference
+            android:key="view_logs"
+            android:title="@string/pref_view_logs"
+            android:summary="@string/pref_view_logs_summary"
+            app:iconSpaceReserved="false">
+            <intent android:targetPackage="com.webview.browser"
+                android:targetClass="com.webview.browser.LogViewerActivity"/>
+        </Preference>
+
     </PreferenceCategory>
 
 </PreferenceScreen>

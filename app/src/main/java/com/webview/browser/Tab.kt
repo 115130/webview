@@ -12,7 +12,8 @@ data class Tab(
     var favicon: Bitmap? = null,
     var previewBitmap: Bitmap? = null, // 标签页预览图
     var lastActiveTime: Long = System.currentTimeMillis(), // 用于保活策略
-    var isBackgroundPaused: Boolean = false // 标记是否已被保活策略暂停
+    var isBackgroundPaused: Boolean = false, // 标记是否已被保活策略暂停
+    var isKeepAliveActive: Boolean = false // 标记是否正在执行保活任务（如播放音频、下载等）
 ) {
     fun updateActivity() {
         lastActiveTime = System.currentTimeMillis()

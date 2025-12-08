@@ -8,6 +8,8 @@ import android.view.ViewGroup
 import android.webkit.WebView
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.concurrent.CopyOnWriteArrayList
 
 object TabManager {
@@ -36,10 +38,13 @@ object TabManager {
         keepAliveHandler.postDelayed(keepAliveRunnable, KEEP_ALIVE_CHECK_INTERVAL)
     }
 
-    fun addTab(tab: Tab) {
+    fun addTab(tab: Tab, context: Context? = null) {
         _tabs.add(tab)
-        switchToTab(tab)
+        switchToTab(tab, context)
         notifyListChanged()
+        if (context != null) {
+            saveTabs(context)
+        }
     }
 
     fun createNewTab(context: Context, url: String? = null): Tab {
@@ -50,11 +55,11 @@ object TabManager {
             newTab.url = url
             webView.loadUrl(url)
         }
-        addTab(newTab)
+        addTab(newTab, context)
         return newTab
     }
 
-    fun closeTab(tab: Tab) {
+    fun closeTab(tab: Tab, context: Context? = null) {
         val index = _tabs.indexOf(tab)
         if (index == -1) return
 
@@ -71,16 +76,19 @@ object TabManager {
             if (_tabs.isNotEmpty()) {
                 // 优先切换到右侧，如果没有则切换到左侧
                 val newIndex = if (index < _tabs.size) index else _tabs.size - 1
-                switchToTab(_tabs[newIndex])
+                switchToTab(_tabs[newIndex], context)
             } else {
                 // 如果没有标签页了，可能需要新建一个或者清空当前
                 _currentTab.value = null
             }
         }
         notifyListChanged()
+        if (context != null) {
+            saveTabs(context)
+        }
     }
 
-    fun switchToTab(tab: Tab) {
+    fun switchToTab(tab: Tab, context: Context? = null) {
         if (_tabs.contains(tab)) {
             // 之前的标签页记录状态
             _currentTab.value?.let { _ ->
@@ -98,6 +106,10 @@ object TabManager {
             }
             
             _currentTab.value = tab
+            
+            if (context != null) {
+                saveTabs(context)
+            }
         }
     }
 
@@ -122,6 +134,12 @@ object TabManager {
 
             // 检查后台标签页
             if (!tab.isBackgroundPaused) {
+                // 如果标签页正在执行保活任务（如播放音频），则不休眠
+                if (tab.isKeepAliveActive) {
+                    tab.updateActivity() // 视为活跃
+                    continue
+                }
+
                 if (currentTime - tab.lastActiveTime > INACTIVITY_THRESHOLD) {
                     // 超过1分钟无活动，执行休眠
                     pauseTab(tab)
@@ -131,21 +149,78 @@ object TabManager {
     }
 
     private fun pauseTab(tab: Tab) {
-        if (!tab.isBackgroundPaused) {
+        if (!tab.isBackgroundPaused && !tab.isKeepAliveActive) {
             android.util.Log.d("TabManager", "Pausing background tab: ${tab.title} due to inactivity")
             tab.webView.onPause()
-            tab.webView.pauseTimers() // 暂停全局JS定时器，注意这会影响所有WebView，需要谨慎
-            // 注意：WebView.pauseTimers() 是全局的，会暂停所有 WebView 的 layout、parsing 和 JavaScript timers。
-            // 这对于多标签页浏览器来说是个问题，因为我们只想暂停特定的后台标签页。
-            // 简单的 onPause() 通常只停止渲染和部分处理。
-            // 为了实现"类似Chrome"的单标签页独立冻结，通常需要更底层的 API 支持或者仅仅依赖 onPause() + 停止加载。
-            // 这里我们先只调用 onPause()，它会通知内核页面不可见，通常会降低优先级。
-            // 如果要严格禁止 JS，可能需要 loadUrl("javascript:...") 注入脚本暂停。
-            
-            // 修正策略：仅调用 onPause，不调用 pauseTimers 以免影响前台
-            // tab.webView.pauseTimers() 
+            // tab.webView.pauseTimers() // 暂停全局JS定时器，注意这会影响所有WebView，需要谨慎
             
             tab.isBackgroundPaused = true
+        }
+    }
+
+    fun saveTabs(context: Context) {
+        try {
+            val prefs = context.getSharedPreferences("tab_prefs", Context.MODE_PRIVATE)
+            val tabsJson = JSONArray()
+            _tabs.forEach { tab ->
+                val tabJson = JSONObject()
+                tabJson.put("id", tab.id)
+                tabJson.put("url", tab.url)
+                tabJson.put("title", tab.title)
+                tabsJson.put(tabJson)
+            }
+            prefs.edit()
+                .putString("tabs_list", tabsJson.toString())
+                .putString("current_tab_id", _currentTab.value?.id)
+                .apply()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    fun restoreTabs(context: Context, webViewFactory: (Context) -> WebView): Boolean {
+        val prefs = context.getSharedPreferences("tab_prefs", Context.MODE_PRIVATE)
+        val tabsString = prefs.getString("tabs_list", null) ?: return false
+        val currentTabId = prefs.getString("current_tab_id", null)
+
+        try {
+            val tabsJson = JSONArray(tabsString)
+            if (tabsJson.length() == 0) return false
+
+            _tabs.clear()
+            var tabToSwitch: Tab? = null
+
+            for (i in 0 until tabsJson.length()) {
+                val tabJson = tabsJson.getJSONObject(i)
+                val url = tabJson.optString("url", "about:blank")
+                val title = tabJson.optString("title", "New Tab")
+                val id = tabJson.optString("id")
+
+                val webView = webViewFactory(context)
+                val tab = Tab(id = id, webView = webView, title = title, url = url)
+                
+                if (url.isNotEmpty()) {
+                    webView.loadUrl(url)
+                }
+                
+                _tabs.add(tab)
+
+                if (id == currentTabId) {
+                    tabToSwitch = tab
+                }
+            }
+
+            if (tabToSwitch != null) {
+                switchToTab(tabToSwitch, context)
+            } else if (_tabs.isNotEmpty()) {
+                switchToTab(_tabs.last(), context)
+            }
+
+            notifyListChanged()
+            return true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return false
         }
     }
 }
