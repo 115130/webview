@@ -362,3 +362,85 @@ graph TD
 
 *   **续期机制**：后台/熄屏倒计时期间出现新活跃任务会重置计时（续命），避免误休眠。
 *   **日志简化**：仅记录关键状态（进入休眠、唤醒、任务续期、强制释放锁），不再记录每次 JS 锁申请/释放，防止日志刷屏。
+
+## 10. 状态栏行为变更 (v1.6)
+
+### 10.1 状态栏隐藏开关移除
+
+为了提供更沉浸的浏览体验，v1.6 移除了设置中的状态栏隐藏开关。
+
+*   **变更内容**：
+    *   从 `app/src/main/res/xml/preferences.xml` 中完全删除 `SwitchPreferenceCompat` 条目 (`android:key="hide_status_bar"`)。
+    *   从 `app/src/main/res/values/strings.xml` 中删除 `pref_hide_status_bar` 和 `pref_hide_status_bar_summary` 字符串资源。
+    *   用户无法再通过设置界面手动控制状态栏的显示与隐藏。
+
+### 10.2 默认始终隐藏状态栏
+
+状态栏现在默认且始终处于隐藏状态。
+
+*   **实现原理**：
+    *   在 `MainActivity.applySettings()` 中，移除了对 `hide_status_bar` 设置的依赖，直接调用 `hideStatusBar()`。
+    *   应用启动时（`onCreate`）也会立即隐藏状态栏。
+    *   `MainActivity.onSharedPreferenceChanged()` 中移除了对 `"hide_status_bar"` 的响应逻辑。
+
+*   **代码变更**：
+    ```kotlin
+    // 原代码 (v1.5):
+    if (prefs.getBoolean("hide_status_bar", false)) {
+        hideStatusBar()
+    } else {
+        showStatusBar()
+    }
+    
+    // 新代码 (v1.6):
+    hideStatusBar() // 始终隐藏
+    ```
+
+### 10.3 下拉状态栏自动隐藏
+
+为了保持沉浸式体验的一致性，即使手动下拉状态栏，系统也会在短暂显示后自动隐藏。
+
+*   **功能描述**：
+    *   用户通过手势下拉显示状态栏后，系统会延迟 3 秒，然后自动将其隐藏。
+    *   无需任何用户操作，状态栏会在显示 3 秒后消失。
+    *   在此期间，用户仍可正常查看状态栏信息（时间、电量、通知等）。
+
+*   **实现原理**：
+    *   在 `MainActivity` 的 `OnApplyWindowInsetsListener` 监听器中检测状态栏是否显示。
+    *   当 `insets.top > 0`（表示状态栏可见）时，启动一个延迟 3000 毫秒的 `Handler` 任务，调用 `hideStatusBar()`。
+    *   使用 `fabHandler.postDelayed` 实现延迟隐藏，避免频繁调用。
+
+*   **代码位置** (`app/src/main/java/com/webview/browser/MainActivity.kt`)：
+    ```kotlin
+    // 在 OnApplyWindowInsetsListener 中
+    if (insets.top > 0) { // 状态栏可见
+        fabHandler.postDelayed({
+            hideStatusBar()
+        }, 3000) // 3 秒后自动隐藏
+    }
+    ```
+
+### 10.4 布局适配优化
+
+状态栏始终隐藏后，顶部布局计算也相应简化。
+
+*   **变更内容**：
+    *   在 `OnApplyWindowInsetsListener` 中，顶部 padding 固定为 0，不再根据状态栏可见性动态调整。
+    *   移除了过时的 `setOnSystemUiVisibilityChangeListener` 和 `SYSTEM_UI_FLAG_FULLSCREEN` 的使用，改用 `WindowInsets` 检测状态栏显示。
+
+*   **影响**：
+    *   WebView 内容始终延伸到状态栏区域，实现真正的全屏沉浸体验。
+    *   消除了状态栏隐藏/显示切换时可能出现的布局跳动。
+
+### 10.5 设置界面清理
+
+`SettingsActivity.kt` 仅加载 `preferences.xml`，无需特殊修改，因为状态栏开关项已从 XML 中移除，界面会自动更新。
+
+## 11. 下一步计划
+
+*   **键盘自动隐藏**：考虑在 WebView 失去焦点时自动隐藏软键盘。
+*   **状态栏沉浸式通知**：探索将系统通知集成到应用内，避免状态栏临时显示。
+*   **多窗口模式适配**：优化在分屏模式下状态栏的显示行为。
+
+---
+*文档版本：v1.6 | 更新日期：2025年12月25日*

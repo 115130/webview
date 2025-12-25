@@ -287,15 +287,13 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
 
         ViewCompat.setOnApplyWindowInsetsListener(binding.root) { view, windowInsets ->
             val insets = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime())
-            val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-            val isStatusBarHidden = prefs.getBoolean("hide_status_bar", false)
             val isAppBarVisible = binding.appBarLayout.visibility == View.VISIBLE
 
             // 1. 底部 Padding (键盘/导航栏) - 始终应用到 Root
             view.setPadding(insets.left, 0, insets.right, insets.bottom)
 
-            // 2. 顶部 Padding 策略
-            val topPadding = if (isStatusBarHidden) 0 else insets.top
+            // 2. 顶部 Padding 策略 - 状态栏始终隐藏，所以顶部 padding 为 0
+            val topPadding = 0
 
             if (isAppBarVisible) {
                 // 计算 ActionBar 高度
@@ -321,8 +319,17 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                 binding.webViewContainer.setPadding(0, 0, 0, 0)
             }
 
+            // 检测状态栏是否显示（insets.top > 0），如果是，延迟隐藏
+            if (insets.top > 0) {
+                fabHandler.removeCallbacks { hideStatusBar() }
+                fabHandler.postDelayed({ hideStatusBar() }, 3000)
+            }
+
             WindowInsetsCompat.CONSUMED
         }
+
+        // 初始隐藏状态栏
+        hideStatusBar()
     }
 
     private fun createNewTab(url: String? = null) {
@@ -877,12 +884,8 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             showAddressBar()
         }
 
-        // 应用状态栏隐藏设置
-        if (prefs.getBoolean("hide_status_bar", false)) {
-            hideStatusBar()
-        } else {
-            showStatusBar()
-        }
+        // 状态栏始终隐藏
+        hideStatusBar()
 
         // 应用地址栏位置设置
         val position = prefs.getString("toolbar_position", "top")
@@ -1394,13 +1397,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                     showAddressBar()
                 }
             }
-            "hide_status_bar" -> {
-                if (sharedPreferences?.getBoolean("hide_status_bar", false) == true) {
-                    hideStatusBar()
-                } else {
-                    showStatusBar()
-                }
-            }
+            // 状态栏隐藏开关已移除，不再处理 "hide_status_bar"
             "toolbar_position" -> {
                 val position = sharedPreferences?.getString("toolbar_position", "top")
                 applyToolbarPosition(position)

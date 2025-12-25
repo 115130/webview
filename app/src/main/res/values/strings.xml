@@ -13,8 +13,6 @@
     <string name="pref_category_display">显示设置</string>
     <string name="pref_hide_address_bar">隐藏地址栏</string>
     <string name="pref_hide_address_bar_summary">勾选后隐藏地址栏，显示悬浮按钮</string>
-    <string name="pref_hide_status_bar">隐藏状态栏</string>
-    <string name="pref_hide_status_bar_summary">隐藏系统状态栏（沉浸式）</string>
     <string name="pref_toolbar_position">地址栏位置</string>
     <string name="pref_toolbar_position_summary">设置地址栏在顶部或底部</string>
     <string name="pref_keep_alive">后台保活</string>
