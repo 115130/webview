@@ -30,6 +30,7 @@ class LogViewerActivity : AppCompatActivity() {
         }
 
         // 设置状态栏颜色
+
         window.statusBarColor = getColor(R.color.primary_dark)
 
         setSupportActionBar(binding.toolbar)

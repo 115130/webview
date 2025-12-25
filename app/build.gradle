@@ -51,16 +51,23 @@ android {
     }
     
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
     }
     
     kotlinOptions {
-        jvmTarget = '1.8'
+        jvmTarget = '11'
     }
     
     buildFeatures {
         viewBinding true
+    }
+
+    packagingOptions {
+        // 防止警告：无法剥离某些库的符号
+        doNotStrip 'libimage_processing_util_jni.so'
+        // 也可以使用通配符
+        doNotStrip '**/*.so'
     }
 }
 
